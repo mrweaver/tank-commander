@@ -195,7 +195,7 @@ bool mqttConnect()
             return false;
 
     Serial.println("Connecting to MQTT broker...");
-    mqttClient.setBufferSize(512); // Needed for HA Discovery payloads
+    mqttClient.setBufferSize(768); // Needed for HA Discovery payloads
     if (mqttClient.connect("TankCommander"))
     {
         Serial.println("Connected.");
@@ -307,6 +307,10 @@ bool mqttPublishStates()
     docOut["interval_s"] = (uint32_t)(tTxInterval_ms / 1000);
     docOut[jsonKeepAwakeSW] = keepAwake_sw;
     docOut[jsonKeepAwakeHW] = (bool)digitalRead(P_KEEPAWAKE);
+    docOut["rssi"] = WiFi.RSSI();
+    docOut["ip"] = WiFi.localIP().toString();
+    docOut["heap"] = ESP.getFreeHeap();
+    docOut["uptime_s"] = (uint32_t)(millis() / 1000);
 
     size_t n = serializeJson(docOut, jsonBuffer);
     ok &= mqttClient.publish(mqttTopicPub, jsonBuffer, n);
@@ -474,7 +478,7 @@ static void publishDiscoveryEntity(const char* component, const char* objectId,
     topic += "/config";
 
     // Build payload with device block
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<768> doc;
     doc["name"] = name;
     String uid = "tankcommander_";
     uid += objectId;
@@ -487,14 +491,17 @@ static void publishDiscoveryEntity(const char* component, const char* objectId,
     dev["name"] = "Tank Commander";
     dev["model"] = "D1 Mini Lite";
     dev["manufacturer"] = "TankCommander";
+    char swVer[12];
+    snprintf(swVer, sizeof(swVer), "%u.%u.%u", VER_MAJOR, VER_MINOR, VER_PATCH);
+    dev["sw_version"] = swVer;
 
     // Parse extra JSON fields into the doc
-    StaticJsonDocument<256> extra;
+    StaticJsonDocument<384> extra;
     deserializeJson(extra, extraJson);
     for (JsonPair kv : extra.as<JsonObject>())
         doc[kv.key()] = kv.value();
 
-    char buf[512];
+    char buf[768];
     size_t n = serializeJson(doc, buf);
     mqttClient.publish(topic.c_str(), (const uint8_t*)buf, n, true); // retained
 }
@@ -511,13 +518,15 @@ void mqttPublishHADiscovery()
         "\"payload_on\":\"true\",\"payload_off\":\"false\","
         "\"state_on\":\"True\",\"state_off\":\"False\"}");
 
-    // Fill Command switch
+    // Fill Command switch (unavailable when fill is disabled)
     publishDiscoveryEntity("switch", "fill_command", "Fill Command",
         "{\"command_topic\":\"tanks/fill/command\","
         "\"state_topic\":\"tanks/fill/state\","
         "\"value_template\":\"{{ value_json.filling }}\","
         "\"payload_on\":\"start\",\"payload_off\":\"stop\","
-        "\"state_on\":\"True\",\"state_off\":\"False\"}");
+        "\"state_on\":\"True\",\"state_off\":\"False\","
+        "\"availability_topic\":\"tanks/fill/state\","
+        "\"availability_template\":\"{{ 'online' if value_json.state != 'disabled' else 'offline' }}\"}");
 
     // Target Level number
     publishDiscoveryEntity("number", "fill_target", "Fill Target Level",
@@ -623,6 +632,36 @@ void mqttPublishHADiscovery()
             "\"icon\":\"mdi:cup-water\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
     }
+
+    // Diagnostic sensors
+    publishDiscoveryEntity("sensor", "wifi_rssi", "WiFi Signal",
+        "{\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ value_json.rssi }}\","
+        "\"device_class\":\"signal_strength\","
+        "\"unit_of_measurement\":\"dBm\","
+        "\"entity_category\":\"diagnostic\","
+        "\"icon\":\"mdi:wifi\"}");
+
+    publishDiscoveryEntity("sensor", "ip_address", "IP Address",
+        "{\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ value_json.ip }}\","
+        "\"entity_category\":\"diagnostic\","
+        "\"icon\":\"mdi:ip-network\"}");
+
+    publishDiscoveryEntity("sensor", "free_heap", "Free Heap",
+        "{\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ value_json.heap }}\","
+        "\"unit_of_measurement\":\"B\","
+        "\"entity_category\":\"diagnostic\","
+        "\"icon\":\"mdi:memory\"}");
+
+    publishDiscoveryEntity("sensor", "uptime", "Uptime",
+        "{\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ value_json.uptime_s }}\","
+        "\"device_class\":\"duration\","
+        "\"unit_of_measurement\":\"s\","
+        "\"entity_category\":\"diagnostic\","
+        "\"icon\":\"mdi:clock-outline\"}");
 
     Serial.println("HA Discovery published.");
 }

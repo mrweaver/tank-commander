@@ -33,7 +33,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 5
+#define VER_MINOR 6
 #define VER_PATCH 0
 #define VER_DATE "2026-02-20"
 
@@ -88,7 +88,7 @@ void OTAinit();
 extern volatile bool otaInProgress;
 
 // JSON ///////////////////////////////////////////////////////////////////////
-const size_t capacityOut = JSON_OBJECT_SIZE(5);
+const size_t capacityOut = JSON_OBJECT_SIZE(12);
 StaticJsonDocument<capacityOut> docOut;       // use DynamicJsonDocument if doc is >1KB
 const char *jsonTank_mm = "mm";               // [mm] tank head
 const char *jsonTank_pc = "pc";               // [%] tank percent full
@@ -98,7 +98,7 @@ const char *jsonBat_V = "bat_V";              // [V]  Battery voltage
 const char *jsonIntrvl = "interval";          // [hh:mm:ss]  Transmission interval
 const char *jsonKeepAwakeSW = "keepawake_sw"; // Software forced "keep awake"
 const char *jsonKeepAwakeHW = "keepawake_hw"; // Hardware forced "keep awake"
-char jsonBuffer[256];                         // JSON buffer for output to MQTT
+char jsonBuffer[384];                         // JSON buffer for output to MQTT
 
 // MQTT ///////////////////////////////////////////////////////////////////////
 const char *mqttTopicPub = "tanks";                                                    // MQTT publish topic
