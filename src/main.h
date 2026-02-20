@@ -8,6 +8,7 @@
 /// 20-08-05 - v0.1 - Initial Commit
 /// 25-02-20 - v0.3 - Add relay-controlled fill solenoid for Tank 3
 /// 26-02-20 - v0.4 - Replace solenoid with 3-wire motorised ball valve (2-channel relay)
+/// 26-02-20 - v0.5 - Remove MQTT auth, disable OTA defaults, add project documentation
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -31,7 +32,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 4
+#define VER_MINOR 5
 #define VER_PATCH 0
 #define VER_DATE "2026-02-20"
 
@@ -109,8 +110,6 @@ bool retainedInterval = false;                                                  
 bool retainedKeepAwake = false;                                                        // MQTT was keep awake retained successfully?
 char homeServer_ip[] = MQTT_SERVER;                                                    // MQTT broker address
 uint16_t homeServer_port = MQTT_PORT;                                                  // MQTT port
-char homeServer_user[] = MQTT_USER;                                                    // MQTT broker username
-char homeServer_pass[] = MQTT_PASS;                                                    // MQTT broker password
 const uint8_t mqttMaxRetry = 5;                                                        // MQTT maximum retry
 uint16_t mqttKeepAlive_s = (tTxInterval_ms / 1000);                                    // [s]
 ICACHE_RAM_ATTR void mqttCallback(char *topic, uint8_t *payload, unsigned int length); // MQTT callback

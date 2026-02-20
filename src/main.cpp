@@ -196,7 +196,7 @@ bool mqttConnect()
 
     Serial.println("Connecting to MQTT broker...");
     mqttClient.setBufferSize(512); // Needed for HA Discovery payloads
-    if (mqttClient.connect("TankCommander", homeServer_user, homeServer_pass))
+    if (mqttClient.connect("TankCommander"))
     {
         Serial.println("Connected.");
         if (mqttClient.subscribe(mqttTopicSubInterval))
