@@ -304,6 +304,7 @@ bool mqttPublishStates()
     docOut[jsonBat_V] = bat_V;
 #endif
     docOut[jsonIntrvl] = msToString(tTxInterval_ms);
+    docOut["interval_s"] = (uint32_t)(tTxInterval_ms / 1000);
     docOut[jsonKeepAwakeSW] = keepAwake_sw;
     docOut[jsonKeepAwakeHW] = (bool)digitalRead(P_KEEPAWAKE);
 
@@ -345,7 +346,7 @@ void mqttDecode()
     if (topic == mqttTopicSubInterval)
     {
         setTxInterval(payload.toInt());
-        Serial.printf("Received - Interval Time: %lu s\n", tTxInterval_ms / 1000);
+        Serial.printf("Received - Interval Time: %u s\n", (uint32_t)(tTxInterval_ms / 1000));
         mqttClient.setKeepAlive(tTxInterval_ms / 1000);
         retainedInterval = true;
     }
@@ -546,6 +547,8 @@ void mqttPublishHADiscovery()
     publishDiscoveryEntity("sensor", "fill_state", "Fill State",
         "{\"state_topic\":\"tanks/fill/state\","
         "\"value_template\":\"{{ value_json.state }}\","
+        "\"device_class\":\"enum\","
+        "\"options\":[\"disabled\",\"idle\",\"valve_opening\",\"filling\",\"valve_closing\",\"cooldown\",\"fault_sensor\",\"fault_timeout\",\"unknown\"],"
         "\"icon\":\"mdi:water-pump\"}");
 
     // Sensor Health binary sensor
@@ -558,6 +561,8 @@ void mqttPublishHADiscovery()
     publishDiscoveryEntity("sensor", "valve_state", "Valve State",
         "{\"state_topic\":\"tanks/fill/state\","
         "\"value_template\":\"{{ value_json.valve }}\","
+        "\"device_class\":\"enum\","
+        "\"options\":[\"opening_settle\",\"opening_travel\",\"opening\",\"closing_settle\",\"closing_travel\",\"closing\",\"open\",\"closed\",\"unknown\"],"
         "\"icon\":\"mdi:valve\"}");
 
     // Clear Fault button
@@ -565,6 +570,24 @@ void mqttPublishHADiscovery()
         "{\"command_topic\":\"tanks/fill/command/override\","
         "\"payload_press\":\"clear_fault\","
         "\"icon\":\"mdi:alert-remove\"}");
+
+    // Keep Awake switch
+    publishDiscoveryEntity("switch", "keep_awake", "Keep Awake",
+        "{\"command_topic\":\"tanks/commands/keepawake\","
+        "\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ 'True' if value_json.keepawake_sw else 'False' }}\","
+        "\"payload_on\":\"True\",\"payload_off\":\"False\","
+        "\"state_on\":\"True\",\"state_off\":\"False\","
+        "\"icon\":\"mdi:sleep-off\"}");
+
+    // Transmission Interval number
+    publishDiscoveryEntity("number", "tx_interval", "Transmission Interval",
+        "{\"command_topic\":\"tanks/commands/interval\","
+        "\"state_topic\":\"tanks\","
+        "\"value_template\":\"{{ value_json.interval_s }}\","
+        "\"min\":10,\"max\":86400,\"step\":10,"
+        "\"unit_of_measurement\":\"s\","
+        "\"icon\":\"mdi:timer-outline\"}");
 
     // Tank sensors (existing data, now discoverable via HA Discovery)
     const char* tankNames[] = {"Tank 1", "Tank 2", "Tank 3"};

@@ -1,4 +1,4 @@
-# Tank Commander v0.5
+# Tank Commander v0.6
 
 ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvesting setup. Monitors water levels via 4–20 mA pressure transmitters, automates Tank 3 filling through a motorized ball valve, and integrates with Home Assistant via MQTT Discovery.
 

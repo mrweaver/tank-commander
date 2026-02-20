@@ -75,7 +75,7 @@ public:
     const char* faultStr() const;
     const char* fillReasonStr() const;
     const char* valveStateStr() const;
-    bool isFilling() const { return m_state == FillState::FILLING; }
+    bool isFilling() const { return m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING; }
     bool isValveBusy() const { return m_state == FillState::VALVE_OPENING || m_state == FillState::VALVE_CLOSING; }
     bool keepAwake() const { return m_keepAwake; }
     const FillConfig& config() const { return m_config; }

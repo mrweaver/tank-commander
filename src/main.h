@@ -9,6 +9,7 @@
 /// 25-02-20 - v0.3 - Add relay-controlled fill solenoid for Tank 3
 /// 26-02-20 - v0.4 - Replace solenoid with 3-wire motorised ball valve (2-channel relay)
 /// 26-02-20 - v0.5 - Remove MQTT auth, disable OTA defaults, add project documentation
+/// 26-02-20 - v0.6 - Improve Home Assistant integration (bouncing switch, enums, keep awake, interval)
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
