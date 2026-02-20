@@ -1,0 +1,32 @@
+Pending:
+    ☐ Verify calibration (send "m,b" via MQTT to tanks/commands/cal1 and confirm readings)
+    ☐ Fix regex in Home assistant (may be resolved by HA MQTT Discovery — check)
+    [ ] create solid readme with instructions and documentation
+
+In Progress:
+
+Old or unknown tasks:
+    ? Add "current cal", clear input_texts when sending.  (likely obsolete with HA Discovery)
+    ? Fix oscillating interval time issue  (may be resolved — retest)
+
+Completed:
+    ✔ Auto-adjust tank max height from recorded sensor maximum @done(26-02-20)
+    ✔ MQTT calibration parsing (m,b format via cal1/cal2/cal3 topics) @done(26-02-20)
+    ✔ Extract secrets to gitignored secrets.h @done(26-02-20)
+    ✔ Check OTA @done(26-02-20) — fully implemented with sleep protection
+    ✔ MQTT input - calibration @started(20-08-16 21:37) @done(26-02-20)
+    ✔ Use sscanf to parse calibration "m,b" string (replaces TinyExpr/RegEx approach) @done(26-02-20)
+    ✔ MQTT input - stay awake (retained message) @started(20-08-16 21:37) @done(20-08-16 21:37) @lasted(24s)
+    ✔ MQTT input - interval time @done(20-08-13 12:52)
+    ✔ Get MQTT to read retained messages from broker @done(20-08-13 16:20)
+    ✔ OTA with sleep @done(20-08-12 17:21)
+    ✔ power-save ina219 on sleep @done(20-08-12 17:21)
+    ✔ Additional INA219 devices @done(20-08-12 17:20)
+    ✔ Resistor change @done(20-08-12 17:20)
+    ✔ Improve power saving @done(20-08-12 17:20)
+    ✔ Modify Adafruit_INA219 @done(20-08-12 17:20)
+    ✔ Create Tank class @done(20-08-12 09:33)
+    ✔ MQTT core @done(20-08-12 09:31)
+    ✔ Height calibration @done(20-08-08 11:33)
+
+Cancelled:
