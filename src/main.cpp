@@ -34,15 +34,28 @@ void setup(void)
     fillController = new FillController(P_VALVE_PWR, P_VALVE_DIR, &tanks[2]);
     fillController->begin();
 
-    wifiConnect();
-    OTAinit();
-    mqttConnect();
-    mqttPublishHADiscovery();
+    if (wifiConnect())
+    {
+        OTAinit();
+        mqttConnect();
+        mqttPublishHADiscovery();
+    }
     sleepInit(); // does not trigger sleep - prepares buttons etc.
 }
 
 void loop(void)
 {
+    // WiFi reconnection (non-blocking, attempt every 30s)
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        if ((millis() - lastWifiReconnectAttempt_ms) > 30000)
+        {
+            lastWifiReconnectAttempt_ms = millis();
+            Serial.println("WiFi disconnected, attempting reconnect...");
+            WiFi.reconnect();
+        }
+    }
+
     // These polling functions only work when sleep switch is deactivated.
     ArduinoOTA.handle();
     mqttClient.loop();
@@ -57,6 +70,14 @@ void loop(void)
         readSensors();
         if (mqttPublishStates())      // broadcast new states to MQTT broker
             tsTransmit_ms = millis(); // if successful, timestamp
+    }
+
+    // Fast sensor reads during active fill (every 10s instead of 60s)
+    if (fillController->isFilling() && (millis() - lastFillRead_ms) > FILL_READ_INTERVAL_MS)
+    {
+        if (tanks[2].connected())
+            tanks[2].read();
+        lastFillRead_ms = millis();
     }
 
     fillController->update();
@@ -93,7 +114,7 @@ void readSensors()
     for (size_t t = 0; t < tanks.size(); t++)
     {
         if (!tanks[t].connected())
-            break;
+            continue;
 
         Serial.printf("Tank %u:\n", t + 1);
         tanks[t].read();
@@ -136,18 +157,25 @@ bool wifiConnect()
     Serial.print(wlan_ssid);
     WiFi.hostname(wlan_hostname);
     WiFi.begin(wlan_ssid, wlan_pass);
-    // WiFi.setSleepMode();
+
+    uint32_t wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED)
     {
+        if ((millis() - wifiStart) > 30000)
+        {
+            Serial.println();
+            Serial.println(F("WiFi connection timeout. Continuing offline."));
+            return false;
+        }
         delay(100);
-        Serial.print(F(".")); // locked here forever if no wifi
+        Serial.print(F("."));
     }
     Serial.println();
     Serial.println(F("WiFi connected."));
     Serial.print(F("IP address: "));
     Serial.println(WiFi.localIP());
 
-    return WiFi.isConnected();
+    return true;
 }
 
 volatile bool otaInProgress = false;
@@ -230,6 +258,7 @@ bool mqttConnect()
         mqttClient.subscribe(mqttTopicFillCfgTarget);
         mqttClient.subscribe(mqttTopicFillCfgLow);
         mqttClient.subscribe(mqttTopicFillCfgMaxDur);
+        mqttClient.subscribe(mqttTopicFillCfgMode);
         mqttClient.subscribe(mqttTopicFillCommand);
         mqttClient.subscribe(mqttTopicFillOverride);
         Serial.println("Subscribed to fill topics.");
@@ -284,7 +313,7 @@ bool mqttPublishStates()
     for (size_t t = 0; t < tanks.size(); t++)
     {
         if (!tanks[t].connected())
-            break;
+            continue;
 
         docOut[jsonTank_mm] = tanks[t].mm();
         docOut[jsonTank_pc] = tanks[t].pc();
@@ -325,13 +354,11 @@ bool mqttPublishStates()
     return ok;
 }
 
-ICACHE_RAM_ATTR void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
+void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 {
-    noInterrupts();
     mqttTopic = topic;
     mqttPayload = payload;
     mqttBytesAvailable = length;
-    interrupts();
 }
 
 void mqttDecode()
@@ -380,7 +407,14 @@ void mqttDecode()
     }
 
     // Fill controller config
-    if (topic == mqttTopicFillCfgEnabled)
+    if (topic == mqttTopicFillCfgMode)
+    {
+        uint8_t mode = 0; // default CLOSED
+        if (payload == "auto") mode = 1;
+        else if (payload == "open") mode = 2;
+        fillController->setValveMode(mode);
+    }
+    else if (topic == mqttTopicFillCfgEnabled)
         fillController->setEnabled(payload == "true");
     else if (topic == mqttTopicFillCfgTarget)
         fillController->setTarget(payload.toFloat());
@@ -458,6 +492,9 @@ void mqttPublishFillState()
     doc["fault"] = fillController->faultStr();
     doc["fill_elapsed_min"] = fillController->fillElapsedMin();
     doc["fill_reason"] = fillController->fillReasonStr();
+    const char* modeNames[] = {"closed", "auto", "open"};
+    uint8_t modeIdx = fillController->config().valveMode;
+    doc["mode"] = modeNames[modeIdx > 2 ? 0 : modeIdx];
     doc["valve"] = fillController->valveStateStr();
 
     char buf[256];
@@ -510,23 +547,18 @@ void mqttPublishHADiscovery()
 {
     Serial.println("Publishing HA MQTT Discovery configs...");
 
-    // Fill Enable switch
-    publishDiscoveryEntity("switch", "fill_enable", "Fill Enable",
-        "{\"command_topic\":\"tanks/fill/config/enabled\","
-        "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.enabled }}\","
-        "\"payload_on\":\"true\",\"payload_off\":\"false\","
-        "\"state_on\":\"True\",\"state_off\":\"False\"}");
+    // Remove deprecated entities and stale retained messages from previous versions
+    mqttClient.publish("homeassistant/switch/tankcommander/fill_enable/config", "", true);
+    mqttClient.publish("homeassistant/switch/tankcommander/fill_command/config", "", true);
+    mqttClient.publish("tanks/fill/config/enabled", "", true);  // clear stale retained command
 
-    // Fill Command switch (unavailable when fill is disabled)
-    publishDiscoveryEntity("switch", "fill_command", "Fill Command",
-        "{\"command_topic\":\"tanks/fill/command\","
+    // Valve Mode select (replaces Fill Enable + Fill Command switches)
+    publishDiscoveryEntity("select", "valve_mode", "Valve Mode",
+        "{\"command_topic\":\"tanks/fill/config/mode\","
         "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.filling }}\","
-        "\"payload_on\":\"start\",\"payload_off\":\"stop\","
-        "\"state_on\":\"True\",\"state_off\":\"False\","
-        "\"availability_topic\":\"tanks/fill/state\","
-        "\"availability_template\":\"{{ 'online' if value_json.state != 'disabled' else 'offline' }}\"}");
+        "\"value_template\":\"{{ value_json.mode }}\","
+        "\"options\":[\"closed\",\"auto\",\"open\"],"
+        "\"icon\":\"mdi:valve\"}");
 
     // Target Level number
     publishDiscoveryEntity("number", "fill_target", "Fill Target Level",

@@ -1,7 +1,7 @@
 Pending:
     ☐ Verify calibration (send "m,b" via MQTT to tanks/commands/cal1 and confirm readings)
-    ☐ Fix regex in Home assistant (may be resolved by HA MQTT Discovery — check)
-    [ ] create solid readme with instructions and documentation
+    ✔ Fix regex in Home assistant (resolved by HA MQTT Discovery) @done(26-02-20)
+    ✔ create solid readme with instructions and documentation @done(26-02-20)
 
 In Progress:
 
@@ -10,6 +10,7 @@ Old or unknown tasks:
     ? Fix oscillating interval time issue  (may be resolved — retest)
 
 Completed:
+    ✔ Improve Home Assistant integration (bouncing switch, enums, keep awake, interval) @done(26-02-20)
     ✔ Auto-adjust tank max height from recorded sensor maximum @done(26-02-20)
     ✔ MQTT calibration parsing (m,b format via cal1/cal2/cal3 topics) @done(26-02-20)
     ✔ Extract secrets to gitignored secrets.h @done(26-02-20)

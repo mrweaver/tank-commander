@@ -3,7 +3,6 @@
 ## Pending
 
 - [ ] Verify calibration — send `"m,b"` via MQTT to `tanks/commands/cal1` and confirm readings match expected values
-- [ ] Fix regex in Home Assistant — may already be resolved by HA MQTT Discovery; needs verification
 
 ## Uncertain / Needs Retest
 
@@ -12,6 +11,8 @@
 
 ## Completed
 
+- [x] Fix regex in Home Assistant — resolved by HA MQTT Discovery *(2026-02-20)*
+- [x] Improve Home Assistant integration (bouncing switch, enums, keep awake, interval) *(2026-02-20)*
 - [x] Create project README with instructions and documentation *(2026-02-20)*
 - [x] Auto-adjust tank max height from recorded sensor maximum *(2026-02-20)*
 - [x] MQTT calibration parsing — `m,b` format via `cal1`/`cal2`/`cal3` topics *(2026-02-20)*

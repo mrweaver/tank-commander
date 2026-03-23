@@ -3,14 +3,10 @@
 
 #include "Adafruit_INA219.h" // TODO: copy this to lib when complete.
 
-#define SENSOR_STUCK_COUNT 5    // consecutive identical readings to trigger stuck fault
-#define SENSOR_STUCK_TOL   0.01 // mA tolerance for stuck detection
-
 enum class SensorFault : uint8_t {
     NONE = 0,
     WIRE_BREAK,     // mA < 3.5 (below 4mA minimum)
-    SHORT_CIRCUIT,  // mA > 21.0 (above 20mA maximum)
-    STUCK_READING   // same value for SENSOR_STUCK_COUNT consecutive reads
+    SHORT_CIRCUIT   // mA > 21.0 (above 20mA maximum)
 };
 
 class Tank
@@ -44,6 +40,8 @@ public:
     {
         m_mA_to_mm_m = m;
         m_mA_to_mm_b = b;
+        m_mA_to_mm_m_theory = m;
+        m_mA_to_mm_b_theory = b;
     }
     void powerSave(bool on) { m_ina219->powerSave(on); }
 
@@ -102,8 +100,6 @@ private:
     // Sensor health
     SensorFault m_sensorFault = SensorFault::NONE;
     bool m_sensorOk = true;
-    float m_lastmA[SENSOR_STUCK_COUNT] = {0};
-    uint8_t m_readIdx = 0;
     void evaluateHealth();
 };
 

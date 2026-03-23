@@ -10,6 +10,8 @@
 /// 26-02-20 - v0.4 - Replace solenoid with 3-wire motorised ball valve (2-channel relay)
 /// 26-02-20 - v0.5 - Remove MQTT auth, disable OTA defaults, add project documentation
 /// 26-02-20 - v0.6 - Improve Home Assistant integration (bouncing switch, enums, keep awake, interval)
+/// 26-02-21 - v0.7 - Sensor reliability fixes, WiFi resilience, valve mode selector (Closed/Auto/Open)
+/// 26-03-24 - v0.7.1 - Fill diagnostic logging, 95% safety overflow cap, stale MQTT cleanup, calibration fix
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -33,9 +35,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 6
-#define VER_PATCH 0
-#define VER_DATE "2026-02-20"
+#define VER_MINOR 7
+#define VER_PATCH 1
+#define VER_DATE "2026-03-24"
 
 #define USE_BAT 0   // use battery monitor
 #define USE_BOOST 0 // use boost converter management
@@ -71,6 +73,8 @@
 #define TIME_MS_IN_H 3600000                  // milliseconds in hour
 #define TIME_MS_IN_M 60000                    // milliseconds in minute
 #define TIME_MS_IN_S 1000                     // milliseconds in second
+#define FILL_READ_INTERVAL_MS 10000            // [ms] fast sensor reads during fill
+uint32_t lastFillRead_ms = 0;                 // timestamp of last fast fill read
 uint64_t tTxInterval_ms = 60000;              // [ms]
 uint64_t tsTransmit_ms = tTxInterval_ms;      // [ms] timestamp of previous transmission
 uint64_t sleepTime_us = tTxInterval_ms * 1e3; // [us] Measurement and transmission interval
@@ -85,6 +89,7 @@ const char wlan_hostname[] = "TankCommander";    // WiFi device hostname
 WiFiClient wifiClient;                          // init wifi class
 bool wifiConnect();
 void OTAinit();
+uint32_t lastWifiReconnectAttempt_ms = 0;
 extern volatile bool otaInProgress;
 
 // JSON ///////////////////////////////////////////////////////////////////////
@@ -113,7 +118,7 @@ char homeServer_ip[] = MQTT_SERVER;                                             
 uint16_t homeServer_port = MQTT_PORT;                                                  // MQTT port
 const uint8_t mqttMaxRetry = 5;                                                        // MQTT maximum retry
 uint16_t mqttKeepAlive_s = (tTxInterval_ms / 1000);                                    // [s]
-ICACHE_RAM_ATTR void mqttCallback(char *topic, uint8_t *payload, unsigned int length); // MQTT callback
+void mqttCallback(char *topic, uint8_t *payload, unsigned int length); // MQTT callback
 char *mqttTopic;
 uint8_t *mqttPayload;
 unsigned int mqttBytesAvailable = 0;
@@ -132,6 +137,7 @@ const char* mqttTopicFillCfgEnabled  = "tanks/fill/config/enabled";
 const char* mqttTopicFillCfgTarget   = "tanks/fill/config/target";
 const char* mqttTopicFillCfgLow      = "tanks/fill/config/low_threshold";
 const char* mqttTopicFillCfgMaxDur   = "tanks/fill/config/max_duration";
+const char* mqttTopicFillCfgMode    = "tanks/fill/config/mode";
 
 // SENSOR AND CALIBRATION /////////////////////////////////////////////////////
 

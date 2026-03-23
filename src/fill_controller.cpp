@@ -11,7 +11,9 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_cooldownStart_ms(0),
       m_valvePhase(ValvePhase::DONE),
       m_valvePhaseStart_ms(0),
-      m_pendingState(FillState::IDLE)
+      m_pendingState(FillState::IDLE),
+      m_sensorRecoveryCount(0),
+      m_openStart_ms(0)
 {
 }
 
@@ -24,13 +26,25 @@ void FillController::begin()
     EEPROM.begin(FILL_EEPROM_SIZE);
     loadConfig();
 
-    if (m_config.fillEnabled)
+    switch ((ValveMode)m_config.valveMode)
+    {
+    case ValveMode::AUTO:
         m_state = FillState::IDLE;
-    else
+        break;
+    case ValveMode::OPEN:
+        m_fillReason = FillReason::HA_OVERRIDE;
+        m_openStart_ms = millis();
+        m_state = FillState::IDLE; // will transition to VALVE_OPENING on first update
+        break;
+    case ValveMode::CLOSED:
+    default:
         m_state = FillState::DISABLED;
+        break;
+    }
 
     Serial.println("FillController initialised.");
-    Serial.printf("  Enabled       : %s\n", m_config.fillEnabled ? "true" : "false");
+    Serial.printf("  Mode          : %s\n",
+        m_config.valveMode == 1 ? "auto" : m_config.valveMode == 2 ? "open" : "closed");
     Serial.printf("  Target        : %.1f %%\n", m_config.targetLevel_pc);
     Serial.printf("  Low threshold : %.1f %%\n", m_config.lowThreshold_pc);
     Serial.printf("  Max duration  : %u min\n", m_config.maxDuration_min);
@@ -81,8 +95,25 @@ void FillController::update()
         break;
 
     case FillState::FAULT_SENSOR:
+        // Auto-recover after consecutive valid sensor reads
+        if (m_tank3->sensorOk())
+        {
+            m_sensorRecoveryCount++;
+            if (m_sensorRecoveryCount >= SENSOR_RECOVERY_COUNT)
+            {
+                Serial.println("Fill: Sensor auto-recovered after consecutive valid reads.");
+                m_sensorRecoveryCount = 0;
+                transitionTo(FillState::IDLE);
+            }
+        }
+        else
+        {
+            m_sensorRecoveryCount = 0;
+        }
+        break;
+
     case FillState::FAULT_TIMEOUT:
-        // Waiting for HA clear_fault command — nothing to do locally
+        // Waiting for HA clear_fault command — timeout requires manual inspection
         break;
     }
 }
@@ -128,6 +159,16 @@ void FillController::updateValveOpening()
 
 void FillController::updateFilling()
 {
+    // Periodic diagnostic log — print actual config every 60s during fill
+    if ((millis() - m_lastDiagLog_ms) >= 60000UL)
+    {
+        const char* modeNames[] = {"closed", "auto", "open"};
+        uint8_t mi = m_config.valveMode > 2 ? 0 : m_config.valveMode;
+        Serial.printf("Fill: Active config — target=%.1f%%, low=%.1f%%, mode=%s, tank3=%.1f%%\n",
+            m_config.targetLevel_pc, m_config.lowThreshold_pc, modeNames[mi], m_tank3->pc());
+        m_lastDiagLog_ms = millis();
+    }
+
     // Check sensor health — fault takes priority
     if (!m_tank3->sensorOk())
     {
@@ -136,22 +177,43 @@ void FillController::updateFilling()
         return;
     }
 
-    // Check if target level reached
-    if (m_tank3->pc() >= m_config.targetLevel_pc)
+    // Safety overflow — always applies, even in OPEN mode
+    if (m_tank3->pc() >= 95.0f)
     {
-        Serial.println("Fill: Target level reached.");
-        startValveClose(FillState::IDLE);
+        Serial.println("Fill: Safety overflow limit reached (95%).");
+        startValveClose(FillState::FAULT_TIMEOUT);
         return;
     }
 
-    // Check session timeout (configurable)
+    // In AUTO mode, check if target level reached
+    if ((ValveMode)m_config.valveMode != ValveMode::OPEN)
+    {
+        if (m_tank3->pc() >= m_config.targetLevel_pc)
+        {
+            Serial.println("Fill: Target level reached.");
+            startValveClose(FillState::IDLE);
+            return;
+        }
+    }
+
+    // Check session timeout — hard max always applies (even in OPEN mode)
     uint32_t elapsed_ms = millis() - m_fillStart_ms;
-    uint32_t maxDuration_ms = (uint32_t)m_config.maxDuration_min * 60000UL;
     uint32_t hardMax_ms = (uint32_t)FILL_HARD_MAX_MIN * 60000UL;
 
-    if (elapsed_ms >= hardMax_ms || elapsed_ms >= maxDuration_ms)
+    if ((ValveMode)m_config.valveMode != ValveMode::OPEN)
     {
-        Serial.printf("Fill: Timeout after %lu min.\n", elapsed_ms / 60000UL);
+        uint32_t maxDuration_ms = (uint32_t)m_config.maxDuration_min * 60000UL;
+        if (elapsed_ms >= maxDuration_ms)
+        {
+            Serial.printf("Fill: Timeout after %lu min.\n", elapsed_ms / 60000UL);
+            startValveClose(FillState::FAULT_TIMEOUT);
+            return;
+        }
+    }
+
+    if (elapsed_ms >= hardMax_ms)
+    {
+        Serial.printf("Fill: Hard timeout after %lu min.\n", elapsed_ms / 60000UL);
         startValveClose(FillState::FAULT_TIMEOUT);
         return;
     }
@@ -198,22 +260,8 @@ void FillController::updateValveClosing()
 
 void FillController::setEnabled(bool en)
 {
-    m_config.fillEnabled = en;
-    saveConfig();
-    Serial.printf("Fill: enabled = %s\n", en ? "true" : "false");
-
-    if (en && m_state == FillState::DISABLED)
-        transitionTo(FillState::IDLE);
-    else if (!en)
-    {
-        // If valve is open or opening, close it first
-        if (m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING)
-            startValveClose(FillState::DISABLED);
-        else if (m_state != FillState::VALVE_CLOSING) // don't interrupt a close in progress
-            transitionTo(FillState::DISABLED);
-        else
-            m_pendingState = FillState::DISABLED; // redirect pending close to DISABLED
-    }
+    // Backward compat: delegate to valve mode
+    setValveMode(en ? (uint8_t)ValveMode::AUTO : (uint8_t)ValveMode::CLOSED);
 }
 
 void FillController::setTarget(float pc)
@@ -241,6 +289,46 @@ void FillController::setMaxDuration(uint16_t minutes)
     m_config.maxDuration_min = minutes;
     saveConfig();
     Serial.printf("Fill: max duration = %u min\n", minutes);
+}
+
+void FillController::setValveMode(uint8_t mode)
+{
+    if (mode > 2) return;
+    m_config.valveMode = mode;
+    m_config.fillEnabled = (mode == (uint8_t)ValveMode::AUTO);
+    saveConfig();
+
+    const char* modeNames[] = {"closed", "auto", "open"};
+    Serial.printf("Fill: valve mode = %s\n", modeNames[mode]);
+
+    switch ((ValveMode)mode)
+    {
+    case ValveMode::CLOSED:
+        if (m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING)
+            startValveClose(FillState::DISABLED);
+        else if (m_state != FillState::VALVE_CLOSING)
+            transitionTo(FillState::DISABLED);
+        else
+            m_pendingState = FillState::DISABLED;
+        break;
+
+    case ValveMode::AUTO:
+        if (m_state == FillState::DISABLED)
+            transitionTo(FillState::IDLE);
+        // If currently in manual OPEN override, close and go to IDLE
+        if (m_state == FillState::FILLING && m_fillReason == FillReason::HA_OVERRIDE)
+            startValveClose(FillState::IDLE);
+        break;
+
+    case ValveMode::OPEN:
+        m_fillReason = FillReason::HA_OVERRIDE;
+        m_openStart_ms = millis();
+        if (m_state == FillState::IDLE || m_state == FillState::DISABLED ||
+            m_state == FillState::COOLDOWN || m_state == FillState::FAULT_SENSOR ||
+            m_state == FillState::FAULT_TIMEOUT)
+            transitionTo(FillState::VALVE_OPENING);
+        break;
+    }
 }
 
 void FillController::commandStart()
@@ -327,7 +415,6 @@ const char* FillController::faultStr() const
         {
         case SensorFault::WIRE_BREAK:    return "sensor_wire_break";
         case SensorFault::SHORT_CIRCUIT: return "sensor_short";
-        case SensorFault::STUCK_READING: return "sensor_stuck";
         default:                         return "sensor_unknown";
         }
     case FillState::FAULT_TIMEOUT: return "fill_timeout";
@@ -485,6 +572,7 @@ void FillController::transitionTo(FillState newState)
     case FillState::FILLING:
         // Valve is now fully open — water is flowing
         m_keepAwake = true;
+        m_lastDiagLog_ms = 0; // force immediate diagnostic log
         Serial.println("Fill: State -> FILLING (valve open).");
         break;
 
@@ -503,6 +591,7 @@ void FillController::transitionTo(FillState newState)
     case FillState::FAULT_SENSOR:
         allOff();
         m_keepAwake = false;
+        m_sensorRecoveryCount = 0;
         Serial.printf("Fill: State -> FAULT_SENSOR (%s).\n", faultStr());
         break;
 
@@ -522,13 +611,15 @@ void FillController::loadConfig()
 
     if (m_config.magic != FILL_CONFIG_MAGIC || m_config.version != FILL_CONFIG_VERSION)
     {
-        Serial.println("Fill: No valid config in EEPROM, loading defaults.");
+        Serial.printf("Fill: EEPROM config invalid (magic=%#04x, ver=%u) — RESET to defaults.\n",
+            m_config.magic, m_config.version);
         setDefaults();
         saveConfig();
     }
     else
     {
-        Serial.println("Fill: Config loaded from EEPROM.");
+        Serial.printf("Fill: Config loaded from EEPROM (target=%.1f%%, low=%.1f%%, mode=%u).\n",
+            m_config.targetLevel_pc, m_config.lowThreshold_pc, m_config.valveMode);
     }
 }
 
@@ -548,5 +639,6 @@ void FillController::setDefaults()
     m_config.targetLevel_pc = 80.0f;
     m_config.lowThreshold_pc = 60.0f;
     m_config.maxDuration_min = 30;
+    m_config.valveMode = (uint8_t)ValveMode::CLOSED;
     memset(m_config._reserved, 0, sizeof(m_config._reserved));
 }

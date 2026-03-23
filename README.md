@@ -160,7 +160,7 @@ pio device monitor -b 115200
 
 | Topic | Payload | Retained | Description |
 |-------|---------|----------|-------------|
-| `tanks` | JSON `{interval, keep_awake}` | No | Device status |
+| `tanks` | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No | Device status |
 | `tanks/tank1` | JSON `{mm, pc, L, bus_V}` | No | Tank 1 readings |
 | `tanks/tank2` | JSON `{mm, pc, L, bus_V}` | No | Tank 2 readings |
 | `tanks/tank3` | JSON `{mm, pc, L, bus_V}` | No | Tank 3 readings |
@@ -220,10 +220,12 @@ Tank Commander publishes MQTT Discovery messages automatically on boot. No manua
 | Fill Target Level | Number | Target % (10–100) |
 | Fill Low Threshold | Number | Auto-fill trigger % (5–95) |
 | Fill Max Duration | Number | Timeout in minutes (1–60) |
-| Fill State | Sensor | Current state machine state |
+| Fill State | Sensor | Current state machine state (enum) |
 | Sensor Health | Binary Sensor | Tank 3 sensor OK/fault |
-| Valve State | Sensor | Valve position/activity |
+| Valve State | Sensor | Valve position/activity (enum) |
 | Clear Fault | Button | Reset fault state |
+| Keep Awake | Switch | Prevent deep sleep |
+| Transmission Interval | Number | Sensor read interval in seconds |
 | Tank 1/2/3 Level (mm) | Sensor | Water height in mm |
 | Tank 1/2/3 Level (%) | Sensor | Water height percentage |
 | Tank 1/2/3 Volume (L) | Sensor | Calculated volume |

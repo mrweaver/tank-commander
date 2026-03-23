@@ -5,11 +5,12 @@
 #include <EEPROM.h>
 #include "tank.h"
 
-#define FILL_CONFIG_MAGIC    0xFC02
-#define FILL_CONFIG_VERSION  2
+#define FILL_CONFIG_MAGIC    0xFC03
+#define FILL_CONFIG_VERSION  3
 #define FILL_CONFIG_ADDR     0
 #define FILL_EEPROM_SIZE     128
 #define FILL_COOLDOWN_MS     30000   // 30 second cooldown after fill stops
+#define SENSOR_RECOVERY_COUNT 3     // consecutive valid reads to auto-clear sensor fault
 #define FILL_HARD_MAX_MIN    60      // absolute backstop, not changeable via MQTT
 
 // Motorised ball valve timing
@@ -36,6 +37,13 @@ enum class FillReason : uint8_t {
     HA_OVERRIDE
 };
 
+/// Valve mode selector — determines how the fill valve behaves
+enum class ValveMode : uint8_t {
+    CLOSED = 0,  // Force valve closed (safe default)
+    AUTO   = 1,  // Automatic fill via state machine (thresholds)
+    OPEN   = 2   // Force valve open (manual override, subject to hard timeout)
+};
+
 /// Sub-phases for non-blocking valve actuation (used during VALVE_OPENING / VALVE_CLOSING)
 enum class ValvePhase : uint8_t {
     SET_DIRECTION,   // direction relay set, waiting VALVE_SETTLE_MS
@@ -44,13 +52,14 @@ enum class ValvePhase : uint8_t {
 };
 
 struct FillConfig {
-    uint16_t magic;             // 0xFC02 — validates stored data
+    uint16_t magic;             // 0xFC03 — validates stored data
     uint8_t  version;           // struct version for future migration
-    bool     fillEnabled;       // master enable/disable
+    bool     fillEnabled;       // derived from valveMode (kept for compat)
     float    targetLevel_pc;    // fill target percentage (default 80)
     float    lowThreshold_pc;   // auto-fill trigger percentage (default 60)
     uint16_t maxDuration_min;   // max fill duration per session in minutes (default 30)
-    uint8_t  _reserved[8];      // padding for future fields
+    uint8_t  valveMode;         // 0=Closed, 1=Auto, 2=Open (see ValveMode enum)
+    uint8_t  _reserved[7];      // padding for future fields
 };
 
 class FillController {
@@ -65,6 +74,7 @@ public:
     void setTarget(float pc);
     void setLowThreshold(float pc);
     void setMaxDuration(uint16_t minutes);
+    void setValveMode(uint8_t mode);
     void commandStart();
     void commandStop();
     void commandClearFault();
@@ -101,6 +111,9 @@ private:
     ValvePhase m_valvePhase;
     uint32_t m_valvePhaseStart_ms;
     FillState m_pendingState;   // state to transition to after VALVE_CLOSING completes
+    uint8_t m_sensorRecoveryCount; // consecutive valid reads since sensor fault
+    uint32_t m_openStart_ms;       // timestamp when OPEN mode started (for hard timeout)
+    uint32_t m_lastDiagLog_ms;     // last diagnostic log during fill
 
     // Valve hardware control (immediate GPIO writes)
     void powerOn();

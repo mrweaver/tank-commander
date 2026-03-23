@@ -1,0 +1,347 @@
+- type: sections
+  max_columns: 4
+  title: Water
+  path: water
+  icon: mdi:water
+  sections:
+    - type: grid
+      cards:
+        - type: heading
+          heading: Irrigation
+          heading_style: title
+          icon: mdi:sprinkler
+          grid_options:
+            columns: 12
+            rows: 1
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_irrigation_master
+              name: Master
+              icon: mdi:play-circle
+              color: green
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_irrigation_standby
+              name: Standby
+              icon: mdi:stop-circle
+              color: red
+              vertical: true
+              features:
+                - type: toggle
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_auto_advance
+              name: Auto-Advance
+              icon: mdi:skip-next-circle
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_queue
+              name: Queue
+              icon: mdi:playlist-play
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_reverse_order
+              name: Reverse
+              icon: mdi:swap-horizontal
+              vertical: true
+              features:
+                - type: toggle
+        - type: tile
+          entity: number.irrigation_controller_global_duration_multiplier
+          name: Duration Multiplier
+          icon: mdi:tune-variant
+          vertical: false
+          features_position: bottom
+          features:
+            - type: numeric-input
+              style: slider
+    - type: grid
+      cards:
+        - type: heading
+          heading: Zones
+          heading_style: title
+          icon: mdi:sprinkler-variant
+          grid_options:
+            columns: 12
+            rows: 1
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_1_central
+              name: 1 · Central
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z1_central
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_central
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_2_east
+              name: 2 · East
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z2_east
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_east
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_3_south_east
+              name: 3 · Sth East
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z3_south_east
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_south_east
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_4_north_west
+              name: 4 · Nth West
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z4_north_west
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_north_west
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_5_south_west
+              name: 5 · Sth West
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z5_south_west
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_south_west
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: switch.irrigation_controller_zone_6_garden
+              name: 6 · Garden
+              icon: mdi:sprinkler
+              color: cyan
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: switch.irrigation_controller_enable_z6_garden
+              name: Enabled
+              icon: mdi:check-circle-outline
+              vertical: true
+              features:
+                - type: toggle
+            - type: tile
+              entity: number.irrigation_controller_duration_garden
+              name: Minutes
+              icon: mdi:timer-outline
+              vertical: true
+              features_position: bottom
+              features:
+                - type: numeric-input
+    - type: grid
+      cards:
+        - type: heading
+          heading: Controller Status
+          heading_style: title
+          icon: mdi:information-outline
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: sensor.irrigation_controller_wifi_signal
+              name: WiFi
+              icon: mdi:wifi
+              vertical: true
+            - type: tile
+              entity: sensor.irrigation_controller_board_input_voltage
+              name: Supply
+              icon: mdi:flash
+              vertical: true
+            - type: tile
+              entity: sensor.irrigation_controller_esp32_temperature
+              name: Board
+              icon: mdi:thermometer
+              vertical: true
+        - type: markdown
+          content: >-
+            #### How It Works
+
+            **Master** starts a full cycle through all *enabled* zones. It is
+            a "go" button, not an arm switch — zones begin immediately.
+
+            **Standby** is the safety lockout. When on, nothing runs. Use this
+            to pause irrigation without changing zone settings.
+
+            **Auto-Advance** controls whether zones run back-to-back. When
+            off, only the first enabled zone runs and then the controller
+            stops.
+
+            **Enable (per zone)** determines if a zone is included in a full
+            cycle. Disabled zones are skipped. You can still manually start a
+            disabled zone by toggling its individual zone switch.
+
+            **Duration** sets minutes per zone. The **Multiplier** scales all
+            durations proportionally (e.g. 1.5× makes a 15 min zone run 22.5
+            min).
+
+            **Queue** lets new zone requests queue up behind the active zone
+            instead of being ignored. Useful for HA automations.
+    - type: grid
+      cards:
+        - type: heading
+          heading: Water Tanks
+          heading_style: title
+          icon: mdi:water-well
+          grid_options:
+            columns: 12
+            rows: 1
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: sensor.tank_commander_tank_1_percent
+              name: Tank 1 Percent
+              icon: mdi:storage-tank
+              vertical: true
+            - type: tile
+              entity: sensor.tank_commander_tank_2_percent
+              name: Tank 2 Percent
+              icon: mdi:storage-tank
+              vertical: true
+            - type: tile
+              entity: sensor.tank_commander_tank_3_percent
+              name: Tank 3 Percent
+              icon: mdi:storage-tank
+              vertical: true
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: sensor.tank_commander_tank_1_volume
+              name: Tank 1 Volume
+              icon: mdi:water
+              vertical: true
+            - type: tile
+              entity: sensor.tank_commander_tank_2_volume
+              name: Tank 2 Volume
+              icon: mdi:water
+              vertical: true
+            - type: tile
+              entity: sensor.tank_commander_tank_3_volume
+              name: Tank 3 Volume
+              icon: mdi:water
+              vertical: true
+        - type: horizontal-stack
+          cards:
+            - type: tile
+              entity: select.tank_commander_valve_mode
+              name: Valve Mode
+              icon: mdi:valve
+              vertical: true
+            - type: tile
+              entity: sensor.tank_commander_fill_state
+              name: Fill State
+              icon: mdi:water-pump
+              vertical: true
+        - type: custom:mini-graph-card
+          name: Tank Levels (24h)
+          hours_to_show: 24
+          line_width: 2
+          font_size: 75
+          animate: true
+          show:
+            labels: true
+            points: false
+            legend: true
+          entities:
+            - entity: sensor.tank_commander_tank_1_percent
+              name: Tank 1
+              color: "#4FC3F7"
+            - entity: sensor.tank_commander_tank_2_percent
+              name: Tank 2
+              color: "#29B6F6"
+            - entity: sensor.tank_commander_tank_3_percent
+              name: Tank 3
+              color: "#0288D1"
+  badges: []
