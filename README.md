@@ -6,33 +6,33 @@ ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvestin
 
 ### Components
 
-| Component | Qty | Purpose |
-|-----------|-----|---------|
-| WeMos D1 Mini Lite (ESP8266) | 1 | Microcontroller |
-| Adafruit INA219 breakout | 3 | 4–20 mA current measurement |
-| 4–20 mA liquid level transmitter (0–20 kPa) | 3 | Pressure head sensing |
-| 3-wire 12V motorized ball valve | 1 | Tank 3 fill control |
-| 2-channel opto-isolated relay module | 1 | Valve power and direction |
-| 12V power supply | 1 | Valve motor supply |
+| Component                                   | Qty | Purpose                     |
+| ------------------------------------------- | --- | --------------------------- |
+| WeMos D1 Mini Lite (ESP8266)                | 1   | Microcontroller             |
+| Adafruit INA219 breakout                    | 3   | 4–20 mA current measurement |
+| 4–20 mA liquid level transmitter (0–20 kPa) | 3   | Pressure head sensing       |
+| 3-wire 12V motorized ball valve             | 1   | Tank 3 fill control         |
+| 2-channel opto-isolated relay module        | 1   | Valve power and direction   |
+| 12V power supply                            | 1   | Valve motor supply          |
 
 ### Wiring / Pin Assignment
 
-| Pin | GPIO | Function | Notes |
-|-----|------|----------|-------|
-| D1 | 5 | I2C SCL | Shared bus for 3× INA219 |
-| D2 | 4 | I2C SDA | Shared bus for 3× INA219 |
-| D5 | 14 | Keep Awake | Pull LOW to prevent deep sleep |
-| D6 | 12 | Valve Power Relay | Active-LOW — energises 12V supply |
-| D7 | 13 | Valve Direction Relay | Active-LOW — LOW = open, HIGH = close |
-| A0 | ADC0 | Battery Monitor | Currently disabled (`USE_BAT=0`) |
+| Pin | GPIO | Function              | Notes                                 |
+| --- | ---- | --------------------- | ------------------------------------- |
+| D1  | 5    | I2C SCL               | Shared bus for 3× INA219              |
+| D2  | 4    | I2C SDA               | Shared bus for 3× INA219              |
+| D5  | 14   | Keep Awake            | Pull LOW to prevent deep sleep        |
+| D6  | 12   | Valve Power Relay     | Active-LOW — energises 12V supply     |
+| D7  | 13   | Valve Direction Relay | Active-LOW — LOW = open, HIGH = close |
+| A0  | ADC0 | Battery Monitor       | Currently disabled (`USE_BAT=0`)      |
 
 ### INA219 I2C Addresses
 
-| Sensor | Address | Jumper Config |
-|--------|---------|---------------|
-| Tank 1 | 0x40 | A0 = GND, A1 = GND |
-| Tank 2 | 0x41 | A0 = Vcc, A1 = GND |
-| Tank 3 | 0x44 | A0 = GND, A1 = Vcc |
+| Sensor | Address | Jumper Config      |
+| ------ | ------- | ------------------ |
+| Tank 1 | 0x40    | A0 = GND, A1 = GND |
+| Tank 2 | 0x41    | A0 = Vcc, A1 = GND |
+| Tank 3 | 0x44    | A0 = GND, A1 = Vcc |
 
 ### Tank Dimensions (Default)
 
@@ -67,14 +67,14 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 
 **Valve actuation is non-blocking** (millis-based): 50 ms relay settle → 8.5 s valve travel.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `fillEnabled` | `false` | Master enable/disable |
-| `targetLevel_pc` | 80% | Stop filling at this level |
-| `lowThreshold_pc` | 60% | Auto-fill trigger |
-| `maxDuration_min` | 30 min | Abort fill safety timeout |
-| Hard max | 60 min | Absolute non-configurable limit |
-| Cooldown | 30 s | Prevents rapid valve cycling |
+| Parameter         | Default | Description                     |
+| ----------------- | ------- | ------------------------------- |
+| `fillEnabled`     | `false` | Master enable/disable           |
+| `targetLevel_pc`  | 80%     | Stop filling at this level      |
+| `lowThreshold_pc` | 60%     | Auto-fill trigger               |
+| `maxDuration_min` | 30 min  | Abort fill safety timeout       |
+| Hard max          | 60 min  | Absolute non-configurable limit |
+| Cooldown          | 30 s    | Prevents rapid valve cycling    |
 
 Configuration is persisted to EEPROM (magic `0xFC02`, version 2).
 
@@ -82,10 +82,10 @@ Configuration is persisted to EEPROM (magic `0xFC02`, version 2).
 
 The `Tank` class continuously checks each 4–20 mA loop:
 
-| Condition | Threshold | Result |
-|-----------|-----------|--------|
-| Wire break | < 3.5 mA | `FAULT_SENSOR` |
-| Short circuit | > 21.0 mA | `FAULT_SENSOR` |
+| Condition     | Threshold                        | Result         |
+| ------------- | -------------------------------- | -------------- |
+| Wire break    | < 3.5 mA                         | `FAULT_SENSOR` |
+| Short circuit | > 21.0 mA                        | `FAULT_SENSOR` |
 | Stuck reading | ±0.01 mA for 5 consecutive reads | `FAULT_SENSOR` |
 
 ### Calibration
@@ -158,13 +158,13 @@ pio device monitor -b 115200
 
 ### Published Topics
 
-| Topic | Payload | Retained | Description |
-|-------|---------|----------|-------------|
-| `tanks` | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No | Device status |
-| `tanks/tank1` | JSON `{mm, pc, L, bus_V}` | No | Tank 1 readings |
-| `tanks/tank2` | JSON `{mm, pc, L, bus_V}` | No | Tank 2 readings |
-| `tanks/tank3` | JSON `{mm, pc, L, bus_V}` | No | Tank 3 readings |
-| `tanks/fill/state` | JSON (see below) | Yes | Fill controller state |
+| Topic              | Payload                                                   | Retained | Description           |
+| ------------------ | --------------------------------------------------------- | -------- | --------------------- |
+| `tanks`            | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No       | Device status         |
+| `tanks/tank1`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 1 readings       |
+| `tanks/tank2`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 2 readings       |
+| `tanks/tank3`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 3 readings       |
+| `tanks/fill/state` | JSON (see below)                                          | Yes      | Fill controller state |
 
 **Fill state payload:**
 ```json
@@ -187,19 +187,19 @@ pio device monitor -b 115200
 
 ### Subscribed Topics (Commands)
 
-| Topic | Payload | Description |
-|-------|---------|-------------|
-| `tanks/commands/interval` | Seconds (integer) | Sensor read interval |
-| `tanks/commands/keepawake` | `True` / `False` | Software keep-awake |
-| `tanks/commands/cal1` | `"m,b"` | Tank 1 calibration |
-| `tanks/commands/cal2` | `"m,b"` | Tank 2 calibration |
-| `tanks/commands/cal3` | `"m,b"` | Tank 3 calibration |
-| `tanks/fill/config/enabled` | `true` / `false` | Enable/disable fill system |
-| `tanks/fill/config/target` | `10`–`100` | Fill target percentage |
-| `tanks/fill/config/low_threshold` | `5`–`95` | Auto-fill trigger percentage |
-| `tanks/fill/config/max_duration` | `1`–`60` | Max fill duration (minutes) |
-| `tanks/fill/command` | `start` / `stop` | Manual fill start/stop |
-| `tanks/fill/command/override` | `clear_fault` | Clear fault state |
+| Topic                             | Payload           | Description                  |
+| --------------------------------- | ----------------- | ---------------------------- |
+| `tanks/commands/interval`         | Seconds (integer) | Sensor read interval         |
+| `tanks/commands/keepawake`        | `True` / `False`  | Software keep-awake          |
+| `tanks/commands/cal1`             | `"m,b"`           | Tank 1 calibration           |
+| `tanks/commands/cal2`             | `"m,b"`           | Tank 2 calibration           |
+| `tanks/commands/cal3`             | `"m,b"`           | Tank 3 calibration           |
+| `tanks/fill/config/enabled`       | `true` / `false`  | Enable/disable fill system   |
+| `tanks/fill/config/target`        | `10`–`100`        | Fill target percentage       |
+| `tanks/fill/config/low_threshold` | `5`–`95`          | Auto-fill trigger percentage |
+| `tanks/fill/config/max_duration`  | `1`–`60`          | Max fill duration (minutes)  |
+| `tanks/fill/command`              | `start` / `stop`  | Manual fill start/stop       |
+| `tanks/fill/command/override`     | `clear_fault`     | Clear fault state            |
 
 ### Calibration Example
 
@@ -213,22 +213,22 @@ Tank Commander publishes MQTT Discovery messages automatically on boot. No manua
 
 ### Auto-Discovered Entities
 
-| Entity | Type | Description |
-|--------|------|-------------|
-| Fill Enable | Switch | Master fill on/off |
-| Fill Command | Switch | Manual start/stop |
-| Fill Target Level | Number | Target % (10–100) |
-| Fill Low Threshold | Number | Auto-fill trigger % (5–95) |
-| Fill Max Duration | Number | Timeout in minutes (1–60) |
-| Fill State | Sensor | Current state machine state (enum) |
-| Sensor Health | Binary Sensor | Tank 3 sensor OK/fault |
-| Valve State | Sensor | Valve position/activity (enum) |
-| Clear Fault | Button | Reset fault state |
-| Keep Awake | Switch | Prevent deep sleep |
-| Transmission Interval | Number | Sensor read interval in seconds |
-| Tank 1/2/3 Level (mm) | Sensor | Water height in mm |
-| Tank 1/2/3 Level (%) | Sensor | Water height percentage |
-| Tank 1/2/3 Volume (L) | Sensor | Calculated volume |
+| Entity                | Type          | Description                        |
+| --------------------- | ------------- | ---------------------------------- |
+| Fill Enable           | Switch        | Master fill on/off                 |
+| Fill Command          | Switch        | Manual start/stop                  |
+| Fill Target Level     | Number        | Target % (10–100)                  |
+| Fill Low Threshold    | Number        | Auto-fill trigger % (5–95)         |
+| Fill Max Duration     | Number        | Timeout in minutes (1–60)          |
+| Fill State            | Sensor        | Current state machine state (enum) |
+| Sensor Health         | Binary Sensor | Tank 3 sensor OK/fault             |
+| Valve State           | Sensor        | Valve position/activity (enum)     |
+| Clear Fault           | Button        | Reset fault state                  |
+| Keep Awake            | Switch        | Prevent deep sleep                 |
+| Transmission Interval | Number        | Sensor read interval in seconds    |
+| Tank 1/2/3 Level (mm) | Sensor        | Water height in mm                 |
+| Tank 1/2/3 Level (%)  | Sensor        | Water height percentage            |
+| Tank 1/2/3 Volume (L) | Sensor        | Calculated volume                  |
 
 ### Example Automation
 
@@ -250,14 +250,14 @@ automation:
 
 Managed by PlatformIO (`platformio.ini`):
 
-| Library | Purpose |
-|---------|---------|
+| Library                                                               | Purpose                     |
+| --------------------------------------------------------------------- | --------------------------- |
 | [Adafruit INA219](https://github.com/mrweaver/Adafruit_INA219) (fork) | 4–20 mA current measurement |
-| Adafruit BusIO | I2C abstraction |
-| ArduinoJson ~6.16.0 | JSON serialisation |
-| PubSubClient | MQTT client |
-| RunningAverage | Sensor smoothing |
-| ArduinoOTA (built-in) | Over-the-air updates |
+| Adafruit BusIO                                                        | I2C abstraction             |
+| ArduinoJson ~6.16.0                                                   | JSON serialisation          |
+| PubSubClient                                                          | MQTT client                 |
+| RunningAverage                                                        | Sensor smoothing            |
+| ArduinoOTA (built-in)                                                 | Over-the-air updates        |
 
 ## Safety Notes
 

@@ -5,8 +5,8 @@ void setup(void)
     // Boot-safe relay init — MUST be first, before anything else.
     // Both pins written HIGH (de-energised) BEFORE setting pinMode to OUTPUT,
     // preventing the relays from briefly firing during ESP8266 boot.
-    digitalWrite(P_VALVE_PWR, HIGH);     // Power relay OFF
-    digitalWrite(P_VALVE_DIR, HIGH); // Direction relay to Close (de-energised)
+    digitalWrite(P_VALVE_PWR, HIGH);  // Power relay OFF
+    digitalWrite(P_VALVE_DIR, HIGH);  // Direction relay to Close (de-energised)
     pinMode(P_VALVE_PWR, OUTPUT);
     pinMode(P_VALVE_DIR, OUTPUT);
 
@@ -40,7 +40,7 @@ void setup(void)
         mqttConnect();
         mqttPublishHADiscovery();
     }
-    sleepInit(); // does not trigger sleep - prepares buttons etc.
+    sleepInit();  // does not trigger sleep - prepares buttons etc.
 }
 
 void loop(void)
@@ -61,15 +61,15 @@ void loop(void)
     mqttClient.loop();
 
     // mqtt Receive
-    if (mqttBytesAvailable) // triggered through ISR
-        mqttDecode();       // if enough time has elapsed
+    if (mqttBytesAvailable)  // triggered through ISR
+        mqttDecode();        // if enough time has elapsed
 
     // Serial.printf("millis(): %u, tsTransmit: %llu, interval: %llu\n", millis(), tsTransmit_ms, tTxInterval_ms);
     if ((millis() - tsTransmit_ms) > tTxInterval_ms)
     {
+        tsTransmit_ms = millis();  // always advance — prevents tight retry loop on MQTT failure
         readSensors();
-        if (mqttPublishStates())      // broadcast new states to MQTT broker
-            tsTransmit_ms = millis(); // if successful, timestamp
+        mqttPublishStates();       // broadcast new states to MQTT broker
     }
 
     // Fast sensor reads during active fill (every 10s instead of 60s)
@@ -97,7 +97,7 @@ void readSensors()
     // Turn on Boost converter for sensors
     Serial.println("Boost converter : On");
     digitalWrite(P_BOOST, true);
-    delay(bootTime_ms); // wait for powerup
+    delay(bootTime_ms);  // wait for powerup
 #endif
 
     // float shuntvoltage = 0;
@@ -145,9 +145,9 @@ void tankInit()
 #endif
 
     // Create tank instances
-    tanks.push_back(Tank(TANK1_ADDR, TANK1_D_MM, TANK1_H_MM)); // Tank 1
-    tanks.push_back(Tank(TANK2_ADDR, TANK2_D_MM, TANK2_H_MM)); // Tank 2
-    tanks.push_back(Tank(TANK3_ADDR, TANK3_D_MM, TANK3_H_MM)); // Tank 3
+    tanks.push_back(Tank(TANK1_ADDR, TANK1_D_MM, TANK1_H_MM));  // Tank 1
+    tanks.push_back(Tank(TANK2_ADDR, TANK2_D_MM, TANK2_H_MM));  // Tank 2
+    tanks.push_back(Tank(TANK3_ADDR, TANK3_D_MM, TANK3_H_MM));  // Tank 3
 }
 
 // WiFi ////////////////////////////////////////////////////////////////////////////////
@@ -185,30 +185,29 @@ void OTAinit()
     ArduinoOTA.setHostname(wlan_hostname);
     ArduinoOTA.setPassword(OTA_PASS);
 
-    ArduinoOTA.onStart([]() {
+    ArduinoOTA.onStart([]()
+                       {
         otaInProgress = true;
         String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-        Serial.println("OTA Start: " + type);
-    });
+        Serial.println("OTA Start: " + type); });
 
-    ArduinoOTA.onEnd([]() {
+    ArduinoOTA.onEnd([]()
+                     {
         otaInProgress = false;
-        Serial.println("\nOTA End — rebooting.");
-    });
+        Serial.println("\nOTA End — rebooting."); });
 
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total);
-    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                          { Serial.printf("OTA Progress: %u%%\r", (progress * 100) / total); });
 
-    ArduinoOTA.onError([](ota_error_t error) {
+    ArduinoOTA.onError([](ota_error_t error)
+                       {
         otaInProgress = false;
         Serial.printf("OTA Error[%u]: ", error);
         if      (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
         else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
         else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
         else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-        else if (error == OTA_END_ERROR)     Serial.println("End Failed");
-    });
+        else if (error == OTA_END_ERROR)     Serial.println("End Failed"); });
 
     ArduinoOTA.begin();
     Serial.printf("OTA ready — hostname: %s, IP: %s\n", wlan_hostname, WiFi.localIP().toString().c_str());
@@ -219,11 +218,10 @@ void OTAinit()
 bool mqttConnect()
 {
     if (!WiFi.isConnected())
-        if (!wifiConnect())
-            return false;
+        return false;  // Non-blocking: WiFi reconnection is handled in loop()
 
     Serial.println("Connecting to MQTT broker...");
-    mqttClient.setBufferSize(768); // Needed for HA Discovery payloads
+    mqttClient.setBufferSize(768);  // Needed for HA Discovery payloads
     if (mqttClient.connect("TankCommander"))
     {
         Serial.println("Connected.");
@@ -271,12 +269,12 @@ bool mqttConnect()
     Serial.print("Waiting for retained messages");
 
     // allow  time for retained messages.
-    uint8_t cnt = 0;
+    uint8_t cnt  = 0;
     bool success = false;
     // use millis to create a continous polling wiht timer.
     uint64_t tsDot = millis();
     uint64_t tsEnd = millis();
-    while ((millis() - tsEnd) < 3000) // todo create min and max time
+    while ((millis() - tsEnd) < 3000)  // todo create min and max time
     {
         mqttClient.loop();
         if (success = (retainedInterval & retainedKeepAwake))
@@ -294,19 +292,14 @@ bool mqttConnect()
 
 bool mqttPublishStates()
 {
-    uint8_t retry = 0;
-    while (!mqttClient.connected() && (retry < mqttMaxRetry))
+    if (!mqttClient.connected())
     {
-        retry++;
-        Serial.println("No existing MQTT connection.");
-        Serial.printf("Retry attempt: %u\n", retry);
-        mqttConnect();
-        delay(1000);
-    }
-    if (retry >= mqttMaxRetry)
-    {
-        Serial.println("Retries failed. Aborting operation.");
-        return false;
+        Serial.println("MQTT not connected — attempting reconnect.");
+        if (!mqttConnect())
+        {
+            Serial.println("MQTT reconnect failed — will retry next interval.");
+            return false;
+        }
     }
 
     bool ok = true;
@@ -315,10 +308,11 @@ bool mqttPublishStates()
         if (!tanks[t].connected())
             continue;
 
-        docOut[jsonTank_mm] = tanks[t].mm();
-        docOut[jsonTank_pc] = tanks[t].pc();
-        docOut[jsonTank_L] = tanks[t].L();
-        docOut[jsonTank_bus] = tanks[t].busV();
+        docOut[jsonTank_mm]       = tanks[t].mm();
+        docOut[jsonTank_pc]       = tanks[t].pc();
+        docOut[jsonTank_L]        = tanks[t].L();
+        docOut[jsonTank_bus]      = tanks[t].busV();
+        docOut["read_uptime_s"]   = (uint32_t)(millis() / 1000);
 
         size_t n = serializeJson(docOut, jsonBuffer);
 
@@ -332,14 +326,14 @@ bool mqttPublishStates()
 #if USE_BAT
     docOut[jsonBat_V] = bat_V;
 #endif
-    docOut[jsonIntrvl] = msToString(tTxInterval_ms);
-    docOut["interval_s"] = (uint32_t)(tTxInterval_ms / 1000);
+    docOut[jsonIntrvl]      = msToString(tTxInterval_ms);
+    docOut["interval_s"]    = (uint32_t)(tTxInterval_ms / 1000);
     docOut[jsonKeepAwakeSW] = keepAwake_sw;
     docOut[jsonKeepAwakeHW] = (bool)digitalRead(P_KEEPAWAKE);
-    docOut["rssi"] = WiFi.RSSI();
-    docOut["ip"] = WiFi.localIP().toString();
-    docOut["heap"] = ESP.getFreeHeap();
-    docOut["uptime_s"] = (uint32_t)(millis() / 1000);
+    docOut["rssi"]          = WiFi.RSSI();
+    docOut["ip"]            = WiFi.localIP().toString();
+    docOut["heap"]          = ESP.getFreeHeap();
+    docOut["uptime_s"]      = (uint32_t)(millis() / 1000);
 
     size_t n = serializeJson(docOut, jsonBuffer);
     ok &= mqttClient.publish(mqttTopicPub, jsonBuffer, n);
@@ -354,10 +348,10 @@ bool mqttPublishStates()
     return ok;
 }
 
-void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
+void mqttCallback(char* topic, uint8_t* payload, unsigned int length)
 {
-    mqttTopic = topic;
-    mqttPayload = payload;
+    mqttTopic          = topic;
+    mqttPayload        = payload;
     mqttBytesAvailable = length;
 }
 
@@ -395,8 +389,8 @@ void mqttDecode()
         float m = 0, b = 0;
         if (sscanf(payload.c_str(), "%f,%f", &m, &b) == 2)
         {
-            uint8_t idx = (topic == mqttTopicSubCal1) ? 0 :
-                          (topic == mqttTopicSubCal2) ? 1 : 2;
+            uint8_t idx = (topic == mqttTopicSubCal1) ? 0 : (topic == mqttTopicSubCal2) ? 1
+                                                                                        : 2;
             tanks[idx].setCali_mA_to_mm(m, b);
             Serial.printf("Received - Tank %u calibration: m=%0.4f, b=%0.4f\n", idx + 1, m, b);
         }
@@ -409,9 +403,11 @@ void mqttDecode()
     // Fill controller config
     if (topic == mqttTopicFillCfgMode)
     {
-        uint8_t mode = 0; // default CLOSED
-        if (payload == "auto") mode = 1;
-        else if (payload == "open") mode = 2;
+        uint8_t mode = 0;  // default CLOSED
+        if (payload == "auto")
+            mode = 1;
+        else if (payload == "open")
+            mode = 2;
         fillController->setValveMode(mode);
     }
     else if (topic == mqttTopicFillCfgEnabled)
@@ -438,7 +434,7 @@ void mqttDecode()
     }
 
     Serial.println();
-    tsTransmit_ms = millis() + tTxInterval_ms - 1000; // force readiness
+    tsTransmit_ms      = millis() + tTxInterval_ms - 1000;  // force readiness
     mqttBytesAvailable = 0;
     // mqttClient.loop();
 }
@@ -448,8 +444,8 @@ void mqttDecode()
 void sleep()
 {
     // Defense-in-depth: ensure both relays are OFF before deep sleep
-    digitalWrite(P_VALVE_PWR, HIGH);     // Power relay OFF
-    digitalWrite(P_VALVE_DIR, HIGH); // Direction relay to Close
+    digitalWrite(P_VALVE_PWR, HIGH);  // Power relay OFF
+    digitalWrite(P_VALVE_DIR, HIGH);  // Direction relay to Close
 
     for (size_t t = 0; t < tanks.size(); t++)
         tanks[t].powerSave(true);
@@ -458,7 +454,7 @@ void sleep()
     WiFi.disconnect();
     Serial.println("Entering deep sleep mode.");
     ESP.deepSleep(sleepTime_us, WAKE_NO_RFCAL);
-    delay(100); // Note: required for deepSleep (above) to work
+    delay(100);  // Note: required for deepSleep (above) to work
 }
 
 void sleepInit()
@@ -470,9 +466,9 @@ void sleepInit()
 void setTxInterval(uint64_t s)
 {
     // TODO: Store this value in RTC RAM - or look at retained MQTT
-    tTxInterval_ms = (s > 0) ? (s * 1000UL) : 1000; // [ms] Prevent continous transmission
-    tsTransmit_ms = millis() + tTxInterval_ms;      // [ms] read and trqnsmit immediately
-    sleepTime_us = tTxInterval_ms * 1e3;            // [us] sleep time
+    tTxInterval_ms = (s > 0) ? (s * 1000UL) : 1000;  // [ms] Prevent continous transmission
+    tsTransmit_ms  = millis() + tTxInterval_ms;      // [ms] read and trqnsmit immediately
+    sleepTime_us   = tTxInterval_ms * 1e3;           // [us] sleep time
 }
 
 // FILL STATE PUBLISHING ///////////////////////////////////////////////////////////
@@ -480,26 +476,26 @@ void setTxInterval(uint64_t s)
 void mqttPublishFillState()
 {
     StaticJsonDocument<256> doc;
-    doc["state"] = fillController->stateStr();
-    doc["filling"] = fillController->isFilling();
-    doc["enabled"] = fillController->config().fillEnabled;
-    doc["target_pc"] = fillController->config().targetLevel_pc;
+    doc["state"]            = fillController->stateStr();
+    doc["filling"]          = fillController->isFilling();
+    doc["enabled"]          = fillController->config().fillEnabled;
+    doc["target_pc"]        = fillController->config().targetLevel_pc;
     doc["low_threshold_pc"] = fillController->config().lowThreshold_pc;
     doc["max_duration_min"] = fillController->config().maxDuration_min;
-    doc["tank3_pc"] = tanks[2].pc();
-    doc["tank3_L"] = tanks[2].L();
-    doc["sensor_ok"] = tanks[2].sensorOk();
-    doc["fault"] = fillController->faultStr();
+    doc["tank3_pc"]         = tanks[2].pc();
+    doc["tank3_L"]          = tanks[2].L();
+    doc["sensor_ok"]        = tanks[2].sensorOk();
+    doc["fault"]            = fillController->faultStr();
     doc["fill_elapsed_min"] = fillController->fillElapsedMin();
-    doc["fill_reason"] = fillController->fillReasonStr();
+    doc["fill_reason"]      = fillController->fillReasonStr();
     const char* modeNames[] = {"closed", "auto", "open"};
-    uint8_t modeIdx = fillController->config().valveMode;
-    doc["mode"] = modeNames[modeIdx > 2 ? 0 : modeIdx];
-    doc["valve"] = fillController->valveStateStr();
+    uint8_t modeIdx         = fillController->config().valveMode;
+    doc["mode"]             = modeNames[modeIdx > 2 ? 0 : modeIdx];
+    doc["valve"]            = fillController->valveStateStr();
 
     char buf[256];
     size_t n = serializeJson(doc, buf);
-    mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true); // retained
+    mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true);  // retained
 }
 
 // HA MQTT DISCOVERY ///////////////////////////////////////////////////////////////
@@ -517,16 +513,16 @@ static void publishDiscoveryEntity(const char* component, const char* objectId,
     // Build payload with device block
     StaticJsonDocument<768> doc;
     doc["name"] = name;
-    String uid = "tankcommander_";
+    String uid  = "tankcommander_";
     uid += objectId;
     doc["unique_id"] = uid;
 
     // Device block
     JsonObject dev = doc.createNestedObject("device");
-    JsonArray ids = dev.createNestedArray("identifiers");
+    JsonArray ids  = dev.createNestedArray("identifiers");
     ids.add("tankcommander");
-    dev["name"] = "Tank Commander";
-    dev["model"] = "D1 Mini Lite";
+    dev["name"]         = "Tank Commander";
+    dev["model"]        = "D1 Mini Lite";
     dev["manufacturer"] = "TankCommander";
     char swVer[12];
     snprintf(swVer, sizeof(swVer), "%u.%u.%u", VER_MAJOR, VER_MINOR, VER_PATCH);
@@ -540,7 +536,7 @@ static void publishDiscoveryEntity(const char* component, const char* objectId,
 
     char buf[768];
     size_t n = serializeJson(doc, buf);
-    mqttClient.publish(topic.c_str(), (const uint8_t*)buf, n, true); // retained
+    mqttClient.publish(topic.c_str(), (const uint8_t*)buf, n, true);  // retained
 }
 
 void mqttPublishHADiscovery()
@@ -554,146 +550,149 @@ void mqttPublishHADiscovery()
 
     // Valve Mode select (replaces Fill Enable + Fill Command switches)
     publishDiscoveryEntity("select", "valve_mode", "Valve Mode",
-        "{\"command_topic\":\"tanks/fill/config/mode\","
-        "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.mode }}\","
-        "\"options\":[\"closed\",\"auto\",\"open\"],"
-        "\"icon\":\"mdi:valve\"}");
+                           "{\"command_topic\":\"tanks/fill/config/mode\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.mode }}\","
+                           "\"options\":[\"closed\",\"auto\",\"open\"],"
+                           "\"icon\":\"mdi:valve\"}");
 
     // Target Level number
     publishDiscoveryEntity("number", "fill_target", "Fill Target Level",
-        "{\"command_topic\":\"tanks/fill/config/target\","
-        "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.target_pc }}\","
-        "\"min\":10,\"max\":100,\"step\":5,"
-        "\"unit_of_measurement\":\"%\"}");
+                           "{\"command_topic\":\"tanks/fill/config/target\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.target_pc }}\","
+                           "\"min\":10,\"max\":100,\"step\":5,"
+                           "\"unit_of_measurement\":\"%\"}");
 
     // Low Threshold number
     publishDiscoveryEntity("number", "fill_low_threshold", "Fill Low Threshold",
-        "{\"command_topic\":\"tanks/fill/config/low_threshold\","
-        "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.low_threshold_pc }}\","
-        "\"min\":5,\"max\":95,\"step\":5,"
-        "\"unit_of_measurement\":\"%\"}");
+                           "{\"command_topic\":\"tanks/fill/config/low_threshold\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.low_threshold_pc }}\","
+                           "\"min\":5,\"max\":95,\"step\":5,"
+                           "\"unit_of_measurement\":\"%\"}");
 
     // Max Duration number
     publishDiscoveryEntity("number", "fill_max_duration", "Fill Max Duration",
-        "{\"command_topic\":\"tanks/fill/config/max_duration\","
-        "\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.max_duration_min }}\","
-        "\"min\":5,\"max\":120,\"step\":5,"
-        "\"unit_of_measurement\":\"min\"}");
+                           "{\"command_topic\":\"tanks/fill/config/max_duration\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.max_duration_min }}\","
+                           "\"min\":5,\"max\":120,\"step\":5,"
+                           "\"unit_of_measurement\":\"min\"}");
 
     // Fill State sensor
     publishDiscoveryEntity("sensor", "fill_state", "Fill State",
-        "{\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.state }}\","
-        "\"device_class\":\"enum\","
-        "\"options\":[\"disabled\",\"idle\",\"valve_opening\",\"filling\",\"valve_closing\",\"cooldown\",\"fault_sensor\",\"fault_timeout\",\"unknown\"],"
-        "\"icon\":\"mdi:water-pump\"}");
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.state }}\","
+                           "\"device_class\":\"enum\","
+                           "\"options\":[\"disabled\",\"idle\",\"valve_opening\",\"filling\",\"valve_closing\",\"cooldown\",\"fault_sensor\",\"fault_timeout\",\"unknown\"],"
+                           "\"icon\":\"mdi:water-pump\"}");
 
     // Sensor Health binary sensor
     publishDiscoveryEntity("binary_sensor", "sensor_health", "Tank 3 Sensor Health",
-        "{\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ 'ON' if not value_json.sensor_ok else 'OFF' }}\","
-        "\"device_class\":\"problem\"}");
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ 'ON' if not value_json.sensor_ok else 'OFF' }}\","
+                           "\"device_class\":\"problem\"}");
 
     // Valve State sensor
     publishDiscoveryEntity("sensor", "valve_state", "Valve State",
-        "{\"state_topic\":\"tanks/fill/state\","
-        "\"value_template\":\"{{ value_json.valve }}\","
-        "\"device_class\":\"enum\","
-        "\"options\":[\"opening_settle\",\"opening_travel\",\"opening\",\"closing_settle\",\"closing_travel\",\"closing\",\"open\",\"closed\",\"unknown\"],"
-        "\"icon\":\"mdi:valve\"}");
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.valve }}\","
+                           "\"device_class\":\"enum\","
+                           "\"options\":[\"opening_settle\",\"opening_travel\",\"opening\",\"closing_settle\",\"closing_travel\",\"closing\",\"open\",\"closed\",\"unknown\"],"
+                           "\"icon\":\"mdi:valve\"}");
 
     // Clear Fault button
     publishDiscoveryEntity("button", "clear_fault", "Clear Fill Fault",
-        "{\"command_topic\":\"tanks/fill/command/override\","
-        "\"payload_press\":\"clear_fault\","
-        "\"icon\":\"mdi:alert-remove\"}");
+                           "{\"command_topic\":\"tanks/fill/command/override\","
+                           "\"payload_press\":\"clear_fault\","
+                           "\"icon\":\"mdi:alert-remove\"}");
 
     // Keep Awake switch
     publishDiscoveryEntity("switch", "keep_awake", "Keep Awake",
-        "{\"command_topic\":\"tanks/commands/keepawake\","
-        "\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ 'True' if value_json.keepawake_sw else 'False' }}\","
-        "\"payload_on\":\"True\",\"payload_off\":\"False\","
-        "\"state_on\":\"True\",\"state_off\":\"False\","
-        "\"icon\":\"mdi:sleep-off\"}");
+                           "{\"command_topic\":\"tanks/commands/keepawake\","
+                           "\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ 'True' if value_json.keepawake_sw else 'False' }}\","
+                           "\"payload_on\":\"True\",\"payload_off\":\"False\","
+                           "\"state_on\":\"True\",\"state_off\":\"False\","
+                           "\"icon\":\"mdi:sleep-off\"}");
 
     // Transmission Interval number
     publishDiscoveryEntity("number", "tx_interval", "Transmission Interval",
-        "{\"command_topic\":\"tanks/commands/interval\","
-        "\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ value_json.interval_s }}\","
-        "\"min\":10,\"max\":86400,\"step\":10,"
-        "\"unit_of_measurement\":\"s\","
-        "\"icon\":\"mdi:timer-outline\"}");
+                           "{\"command_topic\":\"tanks/commands/interval\","
+                           "\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ value_json.interval_s }}\","
+                           "\"min\":10,\"max\":86400,\"step\":10,"
+                           "\"unit_of_measurement\":\"s\","
+                           "\"icon\":\"mdi:timer-outline\"}");
 
     // Tank sensors (existing data, now discoverable via HA Discovery)
-    const char* tankNames[] = {"Tank 1", "Tank 2", "Tank 3"};
+    const char* tankNames[]  = {"Tank 1", "Tank 2", "Tank 3"};
     const char* tankTopics[] = {"tanks/tank1", "tanks/tank2", "tanks/tank3"};
-    const char* tankIds[] = {"tank1", "tank2", "tank3"};
+    const char* tankIds[]    = {"tank1", "tank2", "tank3"};
 
     for (int i = 0; i < 3; i++)
     {
         // Level mm
-        String id = String(tankIds[i]) + "_mm";
-        String name = String(tankNames[i]) + " Level";
-        String extra = "{\"state_topic\":\"" + String(tankTopics[i]) + "\","
-            "\"value_template\":\"{{ value_json.mm | round(0) }}\","
-            "\"unit_of_measurement\":\"mm\","
-            "\"icon\":\"mdi:water\"}";
+        String id    = String(tankIds[i]) + "_mm";
+        String name  = String(tankNames[i]) + " Level";
+        String extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                       "\","
+                       "\"value_template\":\"{{ value_json.mm | round(0) }}\","
+                       "\"unit_of_measurement\":\"mm\","
+                       "\"icon\":\"mdi:water\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
 
         // Percent
-        id = String(tankIds[i]) + "_pc";
-        name = String(tankNames[i]) + " Percent";
-        extra = "{\"state_topic\":\"" + String(tankTopics[i]) + "\","
-            "\"value_template\":\"{{ value_json.pc | round(1) }}\","
-            "\"unit_of_measurement\":\"%\","
-            "\"icon\":\"mdi:water-percent\"}";
+        id    = String(tankIds[i]) + "_pc";
+        name  = String(tankNames[i]) + " Percent";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.pc | round(1) }}\","
+                "\"unit_of_measurement\":\"%\","
+                "\"icon\":\"mdi:water-percent\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
 
         // Volume L
-        id = String(tankIds[i]) + "_L";
-        name = String(tankNames[i]) + " Volume";
-        extra = "{\"state_topic\":\"" + String(tankTopics[i]) + "\","
-            "\"value_template\":\"{{ value_json.L | round(0) }}\","
-            "\"unit_of_measurement\":\"L\","
-            "\"icon\":\"mdi:cup-water\"}";
+        id    = String(tankIds[i]) + "_L";
+        name  = String(tankNames[i]) + " Volume";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.L | round(0) }}\","
+                "\"unit_of_measurement\":\"L\","
+                "\"icon\":\"mdi:cup-water\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
     }
 
     // Diagnostic sensors
     publishDiscoveryEntity("sensor", "wifi_rssi", "WiFi Signal",
-        "{\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ value_json.rssi }}\","
-        "\"device_class\":\"signal_strength\","
-        "\"unit_of_measurement\":\"dBm\","
-        "\"entity_category\":\"diagnostic\","
-        "\"icon\":\"mdi:wifi\"}");
+                           "{\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ value_json.rssi }}\","
+                           "\"device_class\":\"signal_strength\","
+                           "\"unit_of_measurement\":\"dBm\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:wifi\"}");
 
     publishDiscoveryEntity("sensor", "ip_address", "IP Address",
-        "{\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ value_json.ip }}\","
-        "\"entity_category\":\"diagnostic\","
-        "\"icon\":\"mdi:ip-network\"}");
+                           "{\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ value_json.ip }}\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:ip-network\"}");
 
     publishDiscoveryEntity("sensor", "free_heap", "Free Heap",
-        "{\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ value_json.heap }}\","
-        "\"unit_of_measurement\":\"B\","
-        "\"entity_category\":\"diagnostic\","
-        "\"icon\":\"mdi:memory\"}");
+                           "{\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ value_json.heap }}\","
+                           "\"unit_of_measurement\":\"B\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:memory\"}");
 
     publishDiscoveryEntity("sensor", "uptime", "Uptime",
-        "{\"state_topic\":\"tanks\","
-        "\"value_template\":\"{{ value_json.uptime_s }}\","
-        "\"device_class\":\"duration\","
-        "\"unit_of_measurement\":\"s\","
-        "\"entity_category\":\"diagnostic\","
-        "\"icon\":\"mdi:clock-outline\"}");
+                           "{\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ value_json.uptime_s }}\","
+                           "\"device_class\":\"duration\","
+                           "\"unit_of_measurement\":\"s\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:clock-outline\"}");
 
     Serial.println("HA Discovery published.");
 }
@@ -719,9 +718,9 @@ String msToString(uint64_t ms)
     //   snprintf(buff, sizeof(buff), "%02u:%02u:%02u:%02u", years, days, hours, mins); // "dd:hh:mm:ss"
 
     if (days > 0)
-        snprintf(buff, sizeof(buff), "%02u:%02u:%02u:%02u", days, hours, mins, secs); // "dd:hh:mm:ss"
+        snprintf(buff, sizeof(buff), "%02u:%02u:%02u:%02u", days, hours, mins, secs);  // "dd:hh:mm:ss"
     else
-        snprintf(buff, sizeof(buff), "%02u:%02u:%02u", hours, mins, secs); // "hh:mm:ss"
+        snprintf(buff, sizeof(buff), "%02u:%02u:%02u", hours, mins, secs);  // "hh:mm:ss"
 
     return String(buff);
 }

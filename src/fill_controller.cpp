@@ -12,8 +12,8 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_valvePhase(ValvePhase::DONE),
       m_valvePhaseStart_ms(0),
       m_pendingState(FillState::IDLE),
-      m_sensorRecoveryCount(0),
-      m_openStart_ms(0)
+      m_openStart_ms(0),
+      m_sensorRecoveryStart_ms(0)
 {
 }
 
@@ -95,20 +95,22 @@ void FillController::update()
         break;
 
     case FillState::FAULT_SENSOR:
-        // Auto-recover after consecutive valid sensor reads
+        // Auto-recover only after sensor reads valid continuously for SENSOR_RECOVERY_MS (30s).
+        // Checking millis() here (not iteration count) guards against loop() running
+        // at ~10kHz making a 3-iteration counter meaningless.
         if (m_tank3->sensorOk())
         {
-            m_sensorRecoveryCount++;
-            if (m_sensorRecoveryCount >= SENSOR_RECOVERY_COUNT)
+            if (m_sensorRecoveryStart_ms == 0)
+                m_sensorRecoveryStart_ms = millis();  // start timer on first valid read
+            if ((millis() - m_sensorRecoveryStart_ms) >= SENSOR_RECOVERY_MS)
             {
-                Serial.println("Fill: Sensor auto-recovered after consecutive valid reads.");
-                m_sensorRecoveryCount = 0;
+                Serial.println("Fill: Sensor recovered after 30s of valid reads.");
                 transitionTo(FillState::IDLE);
             }
         }
         else
         {
-            m_sensorRecoveryCount = 0;
+            m_sensorRecoveryStart_ms = 0;  // reset timer on any bad read
         }
         break;
 
@@ -591,7 +593,7 @@ void FillController::transitionTo(FillState newState)
     case FillState::FAULT_SENSOR:
         allOff();
         m_keepAwake = false;
-        m_sensorRecoveryCount = 0;
+        m_sensorRecoveryStart_ms = 0;
         Serial.printf("Fill: State -> FAULT_SENSOR (%s).\n", faultStr());
         break;
 
