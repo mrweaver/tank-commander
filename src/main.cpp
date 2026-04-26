@@ -221,7 +221,7 @@ bool mqttConnect()
         return false;  // Non-blocking: WiFi reconnection is handled in loop()
 
     Serial.println("Connecting to MQTT broker...");
-    mqttClient.setBufferSize(768);  // Needed for HA Discovery payloads
+    mqttClient.setBufferSize(1024);  // Needed for HA Discovery payloads
     if (mqttClient.connect("TankCommander"))
     {
         Serial.println("Connected.");
@@ -305,14 +305,14 @@ bool mqttPublishStates()
     bool ok = true;
     for (size_t t = 0; t < tanks.size(); t++)
     {
-        if (!tanks[t].connected())
-            continue;
-
-        docOut[jsonTank_mm]       = tanks[t].mm();
-        docOut[jsonTank_pc]       = tanks[t].pc();
-        docOut[jsonTank_L]        = tanks[t].L();
-        docOut[jsonTank_bus]      = tanks[t].busV();
-        docOut["read_uptime_s"]   = (uint32_t)(millis() / 1000);
+        docOut[jsonTank_mm]      = tanks[t].mm();
+        docOut[jsonTank_pc]      = tanks[t].pc();
+        docOut[jsonTank_L]       = tanks[t].L();
+        docOut[jsonTank_bus]     = tanks[t].busV();
+        docOut["sensor_ok"]      = tanks[t].sensorOk();
+        docOut["sensor_fault"]   = tanks[t].sensorFaultStr();
+        docOut["connected"]      = tanks[t].connected();
+        docOut["read_uptime_s"]  = (uint32_t)(millis() / 1000);
 
         size_t n = serializeJson(docOut, jsonBuffer);
 
@@ -475,7 +475,7 @@ void setTxInterval(uint64_t s)
 
 void mqttPublishFillState()
 {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["state"]            = fillController->stateStr();
     doc["filling"]          = fillController->isFilling();
     doc["enabled"]          = fillController->config().fillEnabled;
@@ -493,7 +493,7 @@ void mqttPublishFillState()
     doc["mode"]             = modeNames[modeIdx > 2 ? 0 : modeIdx];
     doc["valve"]            = fillController->valveStateStr();
 
-    char buf[256];
+    char buf[384];
     size_t n = serializeJson(doc, buf);
     mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true);  // retained
 }
@@ -546,7 +546,8 @@ void mqttPublishHADiscovery()
     // Remove deprecated entities and stale retained messages from previous versions
     mqttClient.publish("homeassistant/switch/tankcommander/fill_enable/config", "", true);
     mqttClient.publish("homeassistant/switch/tankcommander/fill_command/config", "", true);
-    mqttClient.publish("tanks/fill/config/enabled", "", true);  // clear stale retained command
+    mqttClient.publish("tanks/fill/config/enabled", "", true);              // clear stale retained command
+    mqttClient.publish("homeassistant/binary_sensor/tankcommander/sensor_health/config", "", true);  // replaced by per-tank entities
 
     // Valve Mode select (replaces Fill Enable + Fill Command switches)
     publishDiscoveryEntity("select", "valve_mode", "Valve Mode",
@@ -587,12 +588,6 @@ void mqttPublishHADiscovery()
                            "\"device_class\":\"enum\","
                            "\"options\":[\"disabled\",\"idle\",\"valve_opening\",\"filling\",\"valve_closing\",\"cooldown\",\"fault_sensor\",\"fault_timeout\",\"unknown\"],"
                            "\"icon\":\"mdi:water-pump\"}");
-
-    // Sensor Health binary sensor
-    publishDiscoveryEntity("binary_sensor", "sensor_health", "Tank 3 Sensor Health",
-                           "{\"state_topic\":\"tanks/fill/state\","
-                           "\"value_template\":\"{{ 'ON' if not value_json.sensor_ok else 'OFF' }}\","
-                           "\"device_class\":\"problem\"}");
 
     // Valve State sensor
     publishDiscoveryEntity("sensor", "valve_state", "Valve State",
@@ -661,6 +656,37 @@ void mqttPublishHADiscovery()
                 "\"value_template\":\"{{ value_json.L | round(0) }}\","
                 "\"unit_of_measurement\":\"L\","
                 "\"icon\":\"mdi:cup-water\"}";
+        publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Sensor health
+        id    = String(tankIds[i]) + "_health";
+        name  = String(tankNames[i]) + " Sensor Health";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ 'ON' if not value_json.sensor_ok else 'OFF' }}\","
+                "\"device_class\":\"problem\","
+                "\"entity_category\":\"diagnostic\"}";
+        publishDiscoveryEntity("binary_sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // INA219 connected
+        id    = String(tankIds[i]) + "_connected";
+        name  = String(tankNames[i]) + " Sensor Connected";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ 'ON' if value_json.connected else 'OFF' }}\","
+                "\"device_class\":\"connectivity\","
+                "\"entity_category\":\"diagnostic\"}";
+        publishDiscoveryEntity("binary_sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Last read uptime
+        id    = String(tankIds[i]) + "_read_uptime";
+        name  = String(tankNames[i]) + " Last Read Uptime";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.read_uptime_s }}\","
+                "\"unit_of_measurement\":\"s\","
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:clock-check-outline\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
     }
 

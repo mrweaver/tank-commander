@@ -54,8 +54,17 @@ public:
     float pc() { return m_pc; }
     float L() { return m_L; }
     bool connected() { return m_connected; }
-    bool sensorOk() const { return m_sensorOk; }
+    bool sensorOk() const { return m_connected && m_sensorOk; }
     SensorFault sensorFault() const { return m_sensorFault; }
+    const char* sensorFaultStr() const
+    {
+        switch (m_sensorFault)
+        {
+        case SensorFault::WIRE_BREAK:    return "wire_break";
+        case SensorFault::SHORT_CIRCUIT: return "short_circuit";
+        default:                         return "none";
+        }
+    }
 
 private:
     // float m_mA = 0;

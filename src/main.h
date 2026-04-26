@@ -13,6 +13,7 @@
 /// 26-02-21 - v0.7 - Sensor reliability fixes, WiFi resilience, valve mode selector (Closed/Auto/Open)
 /// 26-03-24 - v0.7.1 - Fill diagnostic logging, 95% safety overflow cap, stale MQTT cleanup, calibration fix
 /// 26-04-26 - v0.7.2 - Fix hang: remove blocking wifiConnect() from MQTT retry path; always advance tsTransmit_ms; time-based FAULT_SENSOR recovery; add read_uptime_s to tank payloads
+/// 26-04-26 - v0.7.3 - Sensor health reporting for all tanks: connected/sensor_ok/sensor_fault in payloads; HA discovery for health+connected+read_uptime per tank; sensorOk() guards disconnected INA219; fill controller FAULT_SENSOR on disconnected tank; fill state buffer 256->384; MQTT buffer 768->1024
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -37,7 +38,7 @@
 
 #define VER_MAJOR 0
 #define VER_MINOR 7
-#define VER_PATCH 2
+#define VER_PATCH 3
 #define VER_DATE  "2026-04-26"
 
 #define USE_BAT   0  // use battery monitor

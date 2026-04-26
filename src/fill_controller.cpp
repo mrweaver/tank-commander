@@ -60,8 +60,8 @@ void FillController::update()
         break;
 
     case FillState::IDLE:
-        // Check sensor health first
-        if (!m_tank3->sensorOk())
+        // Check sensor connectivity and health first
+        if (!m_tank3->connected() || !m_tank3->sensorOk())
         {
             transitionTo(FillState::FAULT_SENSOR);
             break;
@@ -171,8 +171,8 @@ void FillController::updateFilling()
         m_lastDiagLog_ms = millis();
     }
 
-    // Check sensor health — fault takes priority
-    if (!m_tank3->sensorOk())
+    // Check sensor connectivity and health — fault takes priority
+    if (!m_tank3->connected() || !m_tank3->sensorOk())
     {
         Serial.println("Fill: Sensor fault during fill.");
         startValveClose(FillState::FAULT_SENSOR);
