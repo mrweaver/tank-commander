@@ -4,7 +4,7 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
     : m_powerPin(powerPin),
       m_dirPin(dirPin),
       m_tank3(tank3),
-      m_state(FillState::DISABLED),
+    m_state(FillState::DISABLED_STATE),
       m_fillReason(FillReason::NONE),
       m_keepAwake(false),
       m_fillStart_ms(0),
@@ -13,7 +13,8 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_valvePhaseStart_ms(0),
       m_pendingState(FillState::IDLE),
       m_openStart_ms(0),
-      m_sensorRecoveryStart_ms(0)
+      m_sensorRecoveryStart_ms(0),
+      m_sensorBadStreak(0)
 {
 }
 
@@ -38,7 +39,7 @@ void FillController::begin()
         break;
     case ValveMode::CLOSED:
     default:
-        m_state = FillState::DISABLED;
+        m_state = FillState::DISABLED_STATE;
         break;
     }
 
@@ -55,17 +56,24 @@ void FillController::update()
 {
     switch (m_state)
     {
-    case FillState::DISABLED:
+    case FillState::DISABLED_STATE:
         // Nothing to do — waiting for enable
         break;
 
     case FillState::IDLE:
-        // Check sensor connectivity and health first
+        // Check sensor connectivity and health — but only fault after a
+        // streak of consecutive bad reads, so a single transient I2C blip
+        // doesn't kill fill function.
         if (!m_tank3->connected() || !m_tank3->sensorOk())
         {
-            transitionTo(FillState::FAULT_SENSOR);
+            if (m_sensorBadStreak < 0xFF) m_sensorBadStreak++;
+            if (m_sensorBadStreak >= FILL_SENSOR_FAULT_THRESHOLD)
+            {
+                transitionTo(FillState::FAULT_SENSOR);
+            }
             break;
         }
+        m_sensorBadStreak = 0;
         // Check if tank level has dropped below low threshold (auto-fill)
         if (m_tank3->pc() <= m_config.lowThreshold_pc)
         {
@@ -171,13 +179,19 @@ void FillController::updateFilling()
         m_lastDiagLog_ms = millis();
     }
 
-    // Check sensor connectivity and health — fault takes priority
+    // Check sensor connectivity and health — gated by a streak so a single
+    // transient bad read during fill doesn't slam the valve closed.
     if (!m_tank3->connected() || !m_tank3->sensorOk())
     {
-        Serial.println("Fill: Sensor fault during fill.");
-        startValveClose(FillState::FAULT_SENSOR);
+        if (m_sensorBadStreak < 0xFF) m_sensorBadStreak++;
+        if (m_sensorBadStreak >= FILL_SENSOR_FAULT_THRESHOLD)
+        {
+            Serial.println("Fill: Sensor fault during fill.");
+            startValveClose(FillState::FAULT_SENSOR);
+        }
         return;
     }
+    m_sensorBadStreak = 0;
 
     // Safety overflow — always applies, even in OPEN mode
     if (m_tank3->pc() >= 95.0f)
@@ -307,15 +321,15 @@ void FillController::setValveMode(uint8_t mode)
     {
     case ValveMode::CLOSED:
         if (m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING)
-            startValveClose(FillState::DISABLED);
+            startValveClose(FillState::DISABLED_STATE);
         else if (m_state != FillState::VALVE_CLOSING)
-            transitionTo(FillState::DISABLED);
+            transitionTo(FillState::DISABLED_STATE);
         else
-            m_pendingState = FillState::DISABLED;
+            m_pendingState = FillState::DISABLED_STATE;
         break;
 
     case ValveMode::AUTO:
-        if (m_state == FillState::DISABLED)
+        if (m_state == FillState::DISABLED_STATE)
             transitionTo(FillState::IDLE);
         // If currently in manual OPEN override, close and go to IDLE
         if (m_state == FillState::FILLING && m_fillReason == FillReason::HA_OVERRIDE)
@@ -325,7 +339,7 @@ void FillController::setValveMode(uint8_t mode)
     case ValveMode::OPEN:
         m_fillReason = FillReason::HA_OVERRIDE;
         m_openStart_ms = millis();
-        if (m_state == FillState::IDLE || m_state == FillState::DISABLED ||
+        if (m_state == FillState::IDLE || m_state == FillState::DISABLED_STATE ||
             m_state == FillState::COOLDOWN || m_state == FillState::FAULT_SENSOR ||
             m_state == FillState::FAULT_TIMEOUT)
             transitionTo(FillState::VALVE_OPENING);
@@ -340,7 +354,7 @@ void FillController::commandStart()
         m_fillReason = FillReason::MANUAL_COMMAND;
         transitionTo(FillState::VALVE_OPENING);
     }
-    else if (m_state == FillState::DISABLED)
+    else if (m_state == FillState::DISABLED_STATE)
     {
         Serial.println("Fill: Cannot start — fill is disabled.");
     }
@@ -396,7 +410,7 @@ const char* FillController::stateStr() const
 {
     switch (m_state)
     {
-    case FillState::DISABLED:      return "disabled";
+    case FillState::DISABLED_STATE: return "disabled";
     case FillState::IDLE:          return "idle";
     case FillState::VALVE_OPENING: return "valve_opening";
     case FillState::FILLING:       return "filling";
@@ -456,7 +470,7 @@ const char* FillController::valveStateStr() const
         }
     case FillState::FILLING: return "open";
     case FillState::IDLE:
-    case FillState::DISABLED:
+    case FillState::DISABLED_STATE:
     case FillState::COOLDOWN:
     case FillState::FAULT_SENSOR:
     case FillState::FAULT_TIMEOUT:
@@ -529,7 +543,7 @@ void FillController::startValveClose(FillState afterClose)
     Serial.printf("Valve: Direction -> CLOSE, pending state: %s.\n",
         afterClose == FillState::IDLE ? "idle" :
         afterClose == FillState::COOLDOWN ? "cooldown" :
-        afterClose == FillState::DISABLED ? "disabled" :
+        afterClose == FillState::DISABLED_STATE ? "disabled" :
         afterClose == FillState::FAULT_SENSOR ? "fault_sensor" :
         afterClose == FillState::FAULT_TIMEOUT ? "fault_timeout" : "unknown");
 }
@@ -551,7 +565,7 @@ void FillController::transitionTo(FillState newState)
     // On-entry actions
     switch (newState)
     {
-    case FillState::DISABLED:
+    case FillState::DISABLED_STATE:
         allOff();
         m_keepAwake = false;
         m_fillReason = FillReason::NONE;
@@ -562,6 +576,7 @@ void FillController::transitionTo(FillState newState)
         allOff();
         m_keepAwake = false;
         m_fillReason = FillReason::NONE;
+        m_sensorBadStreak = 0;
         Serial.println("Fill: State -> IDLE.");
         break;
 
@@ -574,6 +589,7 @@ void FillController::transitionTo(FillState newState)
     case FillState::FILLING:
         // Valve is now fully open — water is flowing
         m_keepAwake = true;
+        m_sensorBadStreak = 0;
         m_lastDiagLog_ms = 0; // force immediate diagnostic log
         Serial.println("Fill: State -> FILLING (valve open).");
         break;

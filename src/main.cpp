@@ -1,10 +1,13 @@
 #include "main.h"
+#include <Wire.h>
 
 void setup(void)
 {
+    Wire.begin(P_SDA, P_SCL);
+
     // Boot-safe relay init — MUST be first, before anything else.
     // Both pins written HIGH (de-energised) BEFORE setting pinMode to OUTPUT,
-    // preventing the relays from briefly firing during ESP8266 boot.
+    // preventing the relays from briefly firing during MCU boot.
     digitalWrite(P_VALVE_PWR, HIGH);  // Power relay OFF
     digitalWrite(P_VALVE_DIR, HIGH);  // Direction relay to Close (de-energised)
     pinMode(P_VALVE_PWR, OUTPUT);
@@ -30,7 +33,7 @@ void setup(void)
     tankInit();
 
     // Init fill controller for Tank 3 (index 2)
-    // P_VALVE_PWR = power relay (D6), P_VALVE_DIR = direction relay (D7)
+    // P_VALVE_PWR / P_VALVE_DIR are board-specific relay pins from build flags.
     fillController = new FillController(P_VALVE_PWR, P_VALVE_DIR, &tanks[2]);
     fillController->begin();
 
@@ -39,6 +42,7 @@ void setup(void)
         OTAinit();
         mqttConnect();
         mqttPublishHADiscovery();
+        publishI2CScan();  // boot-time bus scan published to tanks/diag/i2c_scan
     }
     sleepInit();  // does not trigger sleep - prepares buttons etc.
 }
@@ -48,12 +52,17 @@ void loop(void)
     // WiFi reconnection (non-blocking, attempt every 30s)
     if (WiFi.status() != WL_CONNECTED)
     {
+        otaReady = false;
         if ((millis() - lastWifiReconnectAttempt_ms) > 30000)
         {
             lastWifiReconnectAttempt_ms = millis();
             Serial.println("WiFi disconnected, attempting reconnect...");
             WiFi.reconnect();
         }
+    }
+    else if (!otaReady)
+    {
+        OTAinit();
     }
 
     // These polling functions only work when sleep switch is deactivated.
@@ -72,17 +81,18 @@ void loop(void)
         mqttPublishStates();       // broadcast new states to MQTT broker
     }
 
-    // Fast sensor reads during active fill (every 10s instead of 60s)
+    // Fast sensor reads during active fill (every 10s instead of 60s).
+    // Always attempt read() — read() handles the I2C probe and recovery
+    // internally; gating on connected() would prevent recovery.
     if (fillController->isFilling() && (millis() - lastFillRead_ms) > FILL_READ_INTERVAL_MS)
     {
-        if (tanks[2].connected())
-            tanks[2].read();
+        tanks[2].read();
         lastFillRead_ms = millis();
     }
 
     fillController->update();
 
-    if (!keepAwake_sw && !digitalRead(P_KEEPAWAKE) && !fillController->keepAwake() && !otaInProgress)
+    if (TC_ALLOW_DEEP_SLEEP && !keepAwake_sw && !digitalRead(P_KEEPAWAKE) && !fillController->keepAwake() && !otaInProgress)
         sleep();
 }
 
@@ -113,11 +123,17 @@ void readSensors()
     // loadvoltage = busvoltage + (shuntvoltage / 1000);
     for (size_t t = 0; t < tanks.size(); t++)
     {
-        if (!tanks[t].connected())
-            continue;
-
+        // Always attempt read(); read() probes the bus and tracks failures
+        // internally. Skipping based on connected() would prevent recovery
+        // from a transient I2C miss.
         Serial.printf("Tank %u:\n", t + 1);
         tanks[t].read();
+
+        if (!tanks[t].connected())
+        {
+            Serial.printf("\t(no I2C ACK — skipping log)\n");
+            continue;
+        }
 
         Serial.printf("\tBus Voltage   : %0.3f V\n", tanks[t].busV());
         Serial.printf("\tCurrent       : %0.3f mA\n", tanks[t].mA());
@@ -135,6 +151,36 @@ void readSensors()
     Serial.println("Boost converter : Off");
     digitalWrite(P_BOOST, false);
 #endif
+}
+
+// I2C Scanner ///////////////////////////////////////////////////////////////////////
+// Walks I2C addresses 0x03..0x77 and returns a comma-separated list of ACKing
+// addresses (e.g. "0x40,0x41,0x44") or "none" if the bus is silent. Useful for
+// confirming whether the INA219 chips are actually present on the bus.
+String i2cScan()
+{
+    String result;
+    int count = 0;
+    for (uint8_t addr = 0x03; addr < 0x78; addr++)
+    {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0)
+        {
+            if (count++ > 0) result += ",";
+            char buf[8];
+            snprintf(buf, sizeof(buf), "0x%02X", addr);
+            result += buf;
+        }
+    }
+    return count == 0 ? String("none") : result;
+}
+
+void publishI2CScan()
+{
+    String scan = i2cScan();
+    Serial.printf("I2C bus scan: %s\n", scan.c_str());
+    if (mqttClient.connected())
+        mqttClient.publish(mqttTopicDiagI2C, scan.c_str(), true);  // retained
 }
 
 // Tanks //////////////////////////////////////////////////////////////////////////////
@@ -155,7 +201,7 @@ bool wifiConnect()
 {
     Serial.print("Connecting to ");
     Serial.print(wlan_ssid);
-    WiFi.hostname(wlan_hostname);
+    tcSetHostname(wlan_hostname);
     WiFi.begin(wlan_ssid, wlan_pass);
 
     uint32_t wifiStart = millis();
@@ -179,6 +225,7 @@ bool wifiConnect()
 }
 
 volatile bool otaInProgress = false;
+bool otaReady = false;
 
 void OTAinit()
 {
@@ -207,9 +254,13 @@ void OTAinit()
         else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
         else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
         else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-        else if (error == OTA_END_ERROR)     Serial.println("End Failed"); });
+    #if defined(OTA_END_ERROR)
+        else if (error == OTA_END_ERROR)     Serial.println("End Failed");
+    #endif
+        else                                 Serial.println("Unknown"); });
 
     ArduinoOTA.begin();
+    otaReady = true;
     Serial.printf("OTA ready — hostname: %s, IP: %s\n", wlan_hostname, WiFi.localIP().toString().c_str());
 }
 
@@ -222,7 +273,7 @@ bool mqttConnect()
 
     Serial.println("Connecting to MQTT broker...");
     mqttClient.setBufferSize(1024);  // Needed for HA Discovery payloads
-    if (mqttClient.connect("TankCommander"))
+    if (mqttClient.connect("TankCommander", mqttTopicAvailability, 1, true, "offline"))
     {
         Serial.println("Connected.");
         if (mqttClient.subscribe(mqttTopicSubInterval))
@@ -259,7 +310,9 @@ bool mqttConnect()
         mqttClient.subscribe(mqttTopicFillCfgMode);
         mqttClient.subscribe(mqttTopicFillCommand);
         mqttClient.subscribe(mqttTopicFillOverride);
+        mqttClient.subscribe(mqttTopicDiagRescanCmd);
         Serial.println("Subscribed to fill topics.");
+        mqttPublishAvailability(true);
     }
     else
     {
@@ -269,7 +322,6 @@ bool mqttConnect()
     Serial.print("Waiting for retained messages");
 
     // allow  time for retained messages.
-    uint8_t cnt  = 0;
     bool success = false;
     // use millis to create a continous polling wiht timer.
     uint64_t tsDot = millis();
@@ -277,7 +329,8 @@ bool mqttConnect()
     while ((millis() - tsEnd) < 3000)  // todo create min and max time
     {
         mqttClient.loop();
-        if (success = (retainedInterval & retainedKeepAwake))
+        success = retainedInterval && retainedKeepAwake;
+        if (success)
             break;
 
         if ((millis() - tsDot) > 500)
@@ -287,6 +340,13 @@ bool mqttConnect()
         }
     }
     Serial.println();
+
+    if (mqttClient.connected())
+    {
+        mqttPublishDeviceState();
+        mqttPublishFillState();
+    }
+
     return mqttClient.connected();
 }
 
@@ -305,14 +365,23 @@ bool mqttPublishStates()
     bool ok = true;
     for (size_t t = 0; t < tanks.size(); t++)
     {
-        docOut[jsonTank_mm]      = tanks[t].mm();
-        docOut[jsonTank_pc]      = tanks[t].pc();
-        docOut[jsonTank_L]       = tanks[t].L();
-        docOut[jsonTank_bus]     = tanks[t].busV();
-        docOut["sensor_ok"]      = tanks[t].sensorOk();
-        docOut["sensor_fault"]   = tanks[t].sensorFaultStr();
-        docOut["connected"]      = tanks[t].connected();
-        docOut["read_uptime_s"]  = (uint32_t)(millis() / 1000);
+        docOut[jsonTank_mm]    = tanks[t].mm();
+        docOut[jsonTank_pc]    = tanks[t].pc();
+        docOut[jsonTank_L]     = tanks[t].L();
+        docOut[jsonTank_bus]   = tanks[t].busV();
+        docOut["mA"]           = tanks[t].mA();           // raw current; useful when probe failed
+        docOut["sensor_ok"]    = tanks[t].sensorOk();
+        docOut["sensor_fault"] = tanks[t].sensorFaultStr();
+        docOut["connected"]    = tanks[t].connected();
+        docOut["init_ok"]      = tanks[t].initOk();
+        docOut["fail_streak"]  = tanks[t].failStreak();
+        // last_read_age_s: seconds since the last successful I2C read this wake.
+        // 0 means "just read"; large values or 0xFFFFFFFF mean "never read OK
+        // since boot/wake". Resets on deep sleep wake (no RTC RAM persistence).
+        uint32_t lastOk = tanks[t].lastReadOk_ms();
+        docOut["last_read_age_s"] = lastOk
+            ? (uint32_t)((millis() - lastOk) / 1000UL)
+            : 0xFFFFFFFFu;
 
         size_t n = serializeJson(docOut, jsonBuffer);
 
@@ -323,24 +392,10 @@ bool mqttPublishStates()
         ok &= mqttClient.publish(sTank.c_str(), jsonBuffer, n);
         docOut.clear();
     }
-#if USE_BAT
-    docOut[jsonBat_V] = bat_V;
-#endif
-    docOut[jsonIntrvl]      = msToString(tTxInterval_ms);
-    docOut["interval_s"]    = (uint32_t)(tTxInterval_ms / 1000);
-    docOut[jsonKeepAwakeSW] = keepAwake_sw;
-    docOut[jsonKeepAwakeHW] = (bool)digitalRead(P_KEEPAWAKE);
-    docOut["rssi"]          = WiFi.RSSI();
-    docOut["ip"]            = WiFi.localIP().toString();
-    docOut["heap"]          = ESP.getFreeHeap();
-    docOut["uptime_s"]      = (uint32_t)(millis() / 1000);
-
-    size_t n = serializeJson(docOut, jsonBuffer);
-    ok &= mqttClient.publish(mqttTopicPub, jsonBuffer, n);
-    docOut.clear();
+    ok &= mqttPublishDeviceState();
 
     // Publish fill controller state
-    mqttPublishFillState();
+    ok &= mqttPublishFillState();
 
     if (ok)
         Serial.println("MQTT sent.");
@@ -361,6 +416,8 @@ void mqttDecode()
     Serial.println("MQTT Message Received.");
     String payload;
     String topic(mqttTopic);
+    bool publishDeviceAck = false;
+    bool publishFillAck = false;
 
     for (size_t i = 0; i < mqttBytesAvailable; i++)
     {
@@ -374,6 +431,7 @@ void mqttDecode()
         Serial.printf("Received - Interval Time: %u s\n", (uint32_t)(tTxInterval_ms / 1000));
         mqttClient.setKeepAlive(tTxInterval_ms / 1000);
         retainedInterval = true;
+        publishDeviceAck = true;
     }
 
     if (topic == mqttTopicSubKeepAwake)
@@ -381,6 +439,7 @@ void mqttDecode()
         keepAwake_sw = (payload == "True");
         Serial.printf("Received - Keep Awake : %u\n", keepAwake_sw);
         retainedKeepAwake = true;
+        publishDeviceAck = true;
     }
 
     // Calibration commands — payload format: "m,b" (e.g. "128.57,-516.79")
@@ -409,15 +468,28 @@ void mqttDecode()
         else if (payload == "open")
             mode = 2;
         fillController->setValveMode(mode);
+        publishFillAck = true;
     }
     else if (topic == mqttTopicFillCfgEnabled)
+    {
         fillController->setEnabled(payload == "true");
+        publishFillAck = true;
+    }
     else if (topic == mqttTopicFillCfgTarget)
+    {
         fillController->setTarget(payload.toFloat());
+        publishFillAck = true;
+    }
     else if (topic == mqttTopicFillCfgLow)
+    {
         fillController->setLowThreshold(payload.toFloat());
+        publishFillAck = true;
+    }
     else if (topic == mqttTopicFillCfgMaxDur)
+    {
         fillController->setMaxDuration(payload.toInt());
+        publishFillAck = true;
+    }
 
     // Fill controller commands
     if (topic == mqttTopicFillCommand)
@@ -426,15 +498,30 @@ void mqttDecode()
             fillController->commandStart();
         else if (payload == "stop")
             fillController->commandStop();
+        publishFillAck = true;
     }
     if (topic == mqttTopicFillOverride)
     {
         if (payload == "clear_fault")
             fillController->commandClearFault();
+        publishFillAck = true;
+    }
+
+    // Diagnostic: on-demand I2C bus rescan triggered by HA button
+    if (topic == mqttTopicDiagRescanCmd)
+    {
+        Serial.println("Received - I2C rescan command.");
+        publishI2CScan();
     }
 
     Serial.println();
-    tsTransmit_ms      = millis() + tTxInterval_ms - 1000;  // force readiness
+    if (mqttClient.connected())
+    {
+        if (publishDeviceAck)
+            mqttPublishDeviceState();
+        if (publishFillAck)
+            mqttPublishFillState();
+    }
     mqttBytesAvailable = 0;
     // mqttClient.loop();
 }
@@ -443,6 +530,7 @@ void mqttDecode()
 
 void sleep()
 {
+#if TC_ALLOW_DEEP_SLEEP
     // Defense-in-depth: ensure both relays are OFF before deep sleep
     digitalWrite(P_VALVE_PWR, HIGH);  // Power relay OFF
     digitalWrite(P_VALVE_DIR, HIGH);  // Direction relay to Close
@@ -450,11 +538,17 @@ void sleep()
     for (size_t t = 0; t < tanks.size(); t++)
         tanks[t].powerSave(true);
 
+    if (mqttClient.connected())
+        mqttPublishAvailability(false);
+
     mqttClient.disconnect();
     WiFi.disconnect();
     Serial.println("Entering deep sleep mode.");
-    ESP.deepSleep(sleepTime_us, WAKE_NO_RFCAL);
+    tcStartDeepSleep(sleepTime_us);
     delay(100);  // Note: required for deepSleep (above) to work
+#else
+    Serial.println("Sleep requested, but deep sleep is disabled in this build.");
+#endif
 }
 
 void sleepInit()
@@ -473,7 +567,7 @@ void setTxInterval(uint64_t s)
 
 // FILL STATE PUBLISHING ///////////////////////////////////////////////////////////
 
-void mqttPublishFillState()
+bool mqttPublishFillState()
 {
     StaticJsonDocument<384> doc;
     doc["state"]            = fillController->stateStr();
@@ -495,7 +589,32 @@ void mqttPublishFillState()
 
     char buf[384];
     size_t n = serializeJson(doc, buf);
-    mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true);  // retained
+    return mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true);  // retained
+}
+
+bool mqttPublishDeviceState()
+{
+#if USE_BAT
+    docOut[jsonBat_V] = bat_V;
+#endif
+    docOut[jsonIntrvl]      = msToString(tTxInterval_ms);
+    docOut["interval_s"]    = (uint32_t)(tTxInterval_ms / 1000);
+    docOut[jsonKeepAwakeSW] = keepAwake_sw;
+    docOut[jsonKeepAwakeHW] = (bool)digitalRead(P_KEEPAWAKE);
+    docOut["rssi"]          = WiFi.RSSI();
+    docOut["ip"]            = WiFi.localIP().toString();
+    docOut["heap"]          = ESP.getFreeHeap();
+    docOut["uptime_s"]      = (uint32_t)(millis() / 1000);
+
+    size_t n = serializeJson(docOut, jsonBuffer);
+    bool ok = mqttClient.publish(mqttTopicPub, jsonBuffer, n);
+    docOut.clear();
+    return ok;
+}
+
+bool mqttPublishAvailability(bool online)
+{
+    return mqttClient.publish(mqttTopicAvailability, online ? "online" : "offline", true);
 }
 
 // HA MQTT DISCOVERY ///////////////////////////////////////////////////////////////
@@ -522,11 +641,14 @@ static void publishDiscoveryEntity(const char* component, const char* objectId,
     JsonArray ids  = dev.createNestedArray("identifiers");
     ids.add("tankcommander");
     dev["name"]         = "Tank Commander";
-    dev["model"]        = "D1 Mini Lite";
+    dev["model"]        = TC_BOARD_MODEL;
     dev["manufacturer"] = "TankCommander";
     char swVer[12];
     snprintf(swVer, sizeof(swVer), "%u.%u.%u", VER_MAJOR, VER_MINOR, VER_PATCH);
     dev["sw_version"] = swVer;
+    doc["availability_topic"] = mqttTopicAvailability;
+    doc["payload_available"] = "online";
+    doc["payload_not_available"] = "offline";
 
     // Parse extra JSON fields into the doc
     StaticJsonDocument<384> extra;
@@ -548,6 +670,10 @@ void mqttPublishHADiscovery()
     mqttClient.publish("homeassistant/switch/tankcommander/fill_command/config", "", true);
     mqttClient.publish("tanks/fill/config/enabled", "", true);              // clear stale retained command
     mqttClient.publish("homeassistant/binary_sensor/tankcommander/sensor_health/config", "", true);  // replaced by per-tank entities
+    // v0.7.4: per-tank read_uptime entities renamed to last_read_age — clear the old configs
+    mqttClient.publish("homeassistant/sensor/tankcommander/tank1_read_uptime/config", "", true);
+    mqttClient.publish("homeassistant/sensor/tankcommander/tank2_read_uptime/config", "", true);
+    mqttClient.publish("homeassistant/sensor/tankcommander/tank3_read_uptime/config", "", true);
 
     // Valve Mode select (replaces Fill Enable + Fill Command switches)
     publishDiscoveryEntity("select", "valve_mode", "Valve Mode",
@@ -603,6 +729,32 @@ void mqttPublishHADiscovery()
                            "\"payload_press\":\"clear_fault\","
                            "\"icon\":\"mdi:alert-remove\"}");
 
+    // Fill fault classification (sensor_wire_break / sensor_short / fill_timeout / none)
+    publishDiscoveryEntity("sensor", "fill_fault", "Fill Fault",
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.fault }}\","
+                           "\"device_class\":\"enum\","
+                           "\"options\":[\"none\",\"sensor_wire_break\",\"sensor_short\",\"sensor_unknown\",\"fill_timeout\"],"
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:alert-circle-outline\"}");
+
+    // Fill elapsed time (minutes since current fill started; 0 when not filling)
+    publishDiscoveryEntity("sensor", "fill_elapsed", "Fill Elapsed",
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.fill_elapsed_min }}\","
+                           "\"unit_of_measurement\":\"min\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:timer-sand\"}");
+
+    // Fill reason (auto_low / manual_command / ha_override / none)
+    publishDiscoveryEntity("sensor", "fill_reason", "Fill Reason",
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.fill_reason }}\","
+                           "\"device_class\":\"enum\","
+                           "\"options\":[\"none\",\"auto_low\",\"manual_command\",\"ha_override\"],"
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:information-outline\"}");
+
     // Keep Awake switch
     publishDiscoveryEntity("switch", "keep_awake", "Keep Awake",
                            "{\"command_topic\":\"tanks/commands/keepawake\","
@@ -611,6 +763,13 @@ void mqttPublishHADiscovery()
                            "\"payload_on\":\"True\",\"payload_off\":\"False\","
                            "\"state_on\":\"True\",\"state_off\":\"False\","
                            "\"icon\":\"mdi:sleep-off\"}");
+
+    // Keep Awake (Hardware) — physical jumper state on P_KEEPAWAKE pin
+    publishDiscoveryEntity("binary_sensor", "keep_awake_hw", "Keep Awake (HW)",
+                           "{\"state_topic\":\"tanks\","
+                           "\"value_template\":\"{{ 'ON' if value_json.keepawake_hw else 'OFF' }}\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:jump-rope\"}");
 
     // Transmission Interval number
     publishDiscoveryEntity("number", "tx_interval", "Transmission Interval",
@@ -678,15 +837,76 @@ void mqttPublishHADiscovery()
                 "\"entity_category\":\"diagnostic\"}";
         publishDiscoveryEntity("binary_sensor", id.c_str(), name.c_str(), extra.c_str());
 
-        // Last read uptime
-        id    = String(tankIds[i]) + "_read_uptime";
-        name  = String(tankNames[i]) + " Last Read Uptime";
+        // Age of last successful read — render "never" when the chip hasn't
+        // produced a good reading this wake (sentinel 4294967295). Without
+        // this guard, HA shows the raw uint32_max as a meaningless "4.2B s".
+        id    = String(tankIds[i]) + "_last_read_age";
+        name  = String(tankNames[i]) + " Last Read Age";
         extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
                 "\","
-                "\"value_template\":\"{{ value_json.read_uptime_s }}\","
-                "\"unit_of_measurement\":\"s\","
+                "\"value_template\":\"{% if value_json.last_read_age_s == 4294967295 %}never{% else %}{{ value_json.last_read_age_s }}{% endif %}\","
                 "\"entity_category\":\"diagnostic\","
                 "\"icon\":\"mdi:clock-check-outline\"}";
+        publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Raw current (mA) — diagnostic visibility into what the INA219 is
+        // actually reading; useful for distinguishing wire-break from real
+        // low-water states.
+        id    = String(tankIds[i]) + "_mA";
+        name  = String(tankNames[i]) + " Sensor Current";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.mA | round(3) }}\","
+                "\"unit_of_measurement\":\"mA\","
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:current-dc\"}";
+        publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Bus voltage — diagnostic; INA219 should report ~3.3V when healthy.
+        id    = String(tankIds[i]) + "_bus_V";
+        name  = String(tankNames[i]) + " Bus Voltage";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.bus_V | round(3) }}\","
+                "\"unit_of_measurement\":\"V\","
+                "\"device_class\":\"voltage\","
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:flash\"}";
+        publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Sensor fault enum — exposes the specific fault classification
+        // (wire_break / short_circuit / none).
+        id    = String(tankIds[i]) + "_sensor_fault";
+        name  = String(tankNames[i]) + " Sensor Fault";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.sensor_fault }}\","
+                "\"device_class\":\"enum\","
+                "\"options\":[\"none\",\"wire_break\",\"short_circuit\"],"
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:alert-circle-outline\"}";
+        publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Library init success — true if Adafruit_INA219::begin() succeeded.
+        id    = String(tankIds[i]) + "_init_ok";
+        name  = String(tankNames[i]) + " Library Init OK";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ 'ON' if value_json.init_ok else 'OFF' }}\","
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:check-circle-outline\"}";
+        publishDiscoveryEntity("binary_sensor", id.c_str(), name.c_str(), extra.c_str());
+
+        // Consecutive bad-read streak — reaches FAIL_STREAK_DISCONNECT (3)
+        // before connected() flips false. Lets you watch transient I2C
+        // failures without waiting for full lock-out.
+        id    = String(tankIds[i]) + "_fail_streak";
+        name  = String(tankNames[i]) + " I2C Fail Streak";
+        extra = "{\"state_topic\":\"" + String(tankTopics[i]) +
+                "\","
+                "\"value_template\":\"{{ value_json.fail_streak }}\","
+                "\"entity_category\":\"diagnostic\","
+                "\"icon\":\"mdi:counter\"}";
         publishDiscoveryEntity("sensor", id.c_str(), name.c_str(), extra.c_str());
     }
 
@@ -719,6 +939,18 @@ void mqttPublishHADiscovery()
                            "\"unit_of_measurement\":\"s\","
                            "\"entity_category\":\"diagnostic\","
                            "\"icon\":\"mdi:clock-outline\"}");
+
+    // I2C bus scan diagnostic — populated at boot and on-demand via rescan button
+    publishDiscoveryEntity("sensor", "i2c_scan", "I2C Scan",
+                           "{\"state_topic\":\"tanks/diag/i2c_scan\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:lan-connect\"}");
+
+    publishDiscoveryEntity("button", "i2c_rescan", "I2C Rescan",
+                           "{\"command_topic\":\"tanks/diag/i2c_scan/rescan\","
+                           "\"payload_press\":\"scan\","
+                           "\"entity_category\":\"diagnostic\","
+                           "\"icon\":\"mdi:refresh\"}");
 
     Serial.println("HA Discovery published.");
 }

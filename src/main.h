@@ -14,6 +14,9 @@
 /// 26-03-24 - v0.7.1 - Fill diagnostic logging, 95% safety overflow cap, stale MQTT cleanup, calibration fix
 /// 26-04-26 - v0.7.2 - Fix hang: remove blocking wifiConnect() from MQTT retry path; always advance tsTransmit_ms; time-based FAULT_SENSOR recovery; add read_uptime_s to tank payloads
 /// 26-04-26 - v0.7.3 - Sensor health reporting for all tanks: connected/sensor_ok/sensor_fault in payloads; HA discovery for health+connected+read_uptime per tank; sensorOk() guards disconnected INA219; fill controller FAULT_SENSOR on disconnected tank; fill state buffer 256->384; MQTT buffer 768->1024
+/// 26-05-07 - v0.7.4 - Active INA219 connectivity probe via R/W integrity test on register 0x05 (verifies ACK + register memory + bus paths); always attempt read() so disconnected sensors can recover; replace read_uptime_s with last_read_age_s; fill controller requires 3 consecutive bad reads before FAULT_SENSOR; fix latent POWERDOWN-after-construct bug
+/// 26-05-07 - v0.7.5 - Diagnostic surface: I2C bus scanner sensor + on-demand rescan button; per-tank mA/bus_V/sensor_fault/init_ok/fail_streak entities; fill fault/elapsed/reason entities; keepawake_hw binary sensor; last_read_age_s renders "never" instead of 4.3 billion seconds when no successful read this wake; library isAlive() method delegates probe to Adafruit_INA219
+/// 26-05-14 - v0.8.0 - First multi-platform controller release: ESP32 platform support via compatibility layer/build targets, richer tank and fill diagnostics, immediate MQTT command acknowledgements, retained availability for HA entities, controller-first always-online default build, README/docs aligned with the new control model
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -28,8 +31,8 @@
 ///
 /// Tank 3 has a 3-wire 12V motorised ball valve for filling with mains water,
 /// controlled by a 2-channel opto-isolated relay module (active-LOW):
-///   D6 (GPIO12) = IN1 (Power Relay) — controls 12V supply to valve motor
-///   D7 (GPIO13) = IN2 (Direction Relay) — de-energised=Close, energised=Open
+///   ESP8266 env: D6 (GPIO12) = IN1, D7 (GPIO13) = IN2
+///   Other envs: relay pins are supplied by board-specific PlatformIO build flags
 /// Valve travel time is ~8 seconds. Non-blocking actuation via millis() timers.
 /// Fill operations are governed by a local safety state machine that operates
 /// independently of Home Assistant connectivity.
@@ -37,9 +40,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 7
-#define VER_PATCH 3
-#define VER_DATE  "2026-04-26"
+#define VER_MINOR 8
+#define VER_PATCH 0
+#define VER_DATE  "2026-05-14"
 
 #define USE_BAT   0  // use battery monitor
 #define USE_BOOST 0  // use boost converter management
@@ -51,7 +54,7 @@
 
 // MQTT -> with JSON
 #include <ArduinoJson.h>
-#include <ESP8266WiFi.h>
+#include "platform_compat.h"
 #include <PubSubClient.h>
 
 // Tanks
@@ -81,6 +84,9 @@ uint64_t tTxInterval_ms  = 60000;                 // [ms]
 uint64_t tsTransmit_ms   = tTxInterval_ms;        // [ms] timestamp of previous transmission
 uint64_t sleepTime_us    = tTxInterval_ms * 1e3;  // [us] Measurement and transmission interval
 uint16_t bootTime_ms     = 250;                   // [ms] boot up time for combined boost converter and sensors
+#ifndef TC_ALLOW_DEEP_SLEEP
+#define TC_ALLOW_DEEP_SLEEP 0
+#endif
 void setTxInterval(uint64_t s);
 String msToString(uint64_t ms);
 
@@ -93,6 +99,7 @@ bool wifiConnect();
 void OTAinit();
 uint32_t lastWifiReconnectAttempt_ms = 0;
 extern volatile bool otaInProgress;
+extern bool otaReady;
 
 // JSON ///////////////////////////////////////////////////////////////////////
 const size_t capacityOut = JSON_OBJECT_SIZE(12);
@@ -114,6 +121,7 @@ const char* mqttTopicSubKeepAwake = "tanks/commands/keepawake";         // MQTT 
 const char* mqttTopicSubCal1      = "tanks/commands/cal1";              // MQTT subscription topic
 const char* mqttTopicSubCal2      = "tanks/commands/cal2";              // MQTT subscription topic
 const char* mqttTopicSubCal3      = "tanks/commands/cal3";              // MQTT subscription topic
+const char* mqttTopicAvailability = "tanks/status";                     // MQTT availability topic
 bool retainedInterval             = false;                              // MQTT was interval retained successfully?
 bool retainedKeepAwake            = false;                              // MQTT was keep awake retained successfully?
 char homeServer_ip[]              = MQTT_SERVER;                        // MQTT broker address
@@ -127,9 +135,17 @@ unsigned int mqttBytesAvailable = 0;
 PubSubClient mqttClient(homeServer_ip, homeServer_port, mqttCallback, wifiClient);  // init MQTT class
 bool mqttConnect();
 bool mqttPublishStates();
+bool mqttPublishDeviceState();
+bool mqttPublishAvailability(bool online);
 void mqttDecode();
-void mqttPublishFillState();
+bool mqttPublishFillState();
 void mqttPublishHADiscovery();
+String i2cScan();
+void publishI2CScan();
+
+// MQTT Diagnostic Topics
+const char* mqttTopicDiagI2C      = "tanks/diag/i2c_scan";
+const char* mqttTopicDiagRescanCmd = "tanks/diag/i2c_scan/rescan";
 
 // MQTT Fill Topics
 const char* mqttTopicFillState      = "tanks/fill/state";

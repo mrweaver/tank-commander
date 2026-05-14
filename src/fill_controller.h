@@ -12,6 +12,7 @@
 #define FILL_COOLDOWN_MS    30000  // 30 second cooldown after fill stops
 #define SENSOR_RECOVERY_MS  30000  // sensor must read valid for 30s continuously to auto-clear fault
 #define FILL_HARD_MAX_MIN   60     // absolute backstop, not changeable via MQTT
+#define FILL_SENSOR_FAULT_THRESHOLD 3  // consecutive bad reads before transitioning to FAULT_SENSOR
 
 // Motorised ball valve timing
 #define VALVE_SETTLE_MS 50    // relay contact settle time before applying power
@@ -21,7 +22,7 @@
 /// run a non-blocking sub-sequence to actuate the 3-wire motorised ball valve.
 enum class FillState : uint8_t
 {
-    DISABLED,
+    DISABLED_STATE,
     IDLE,
     VALVE_OPENING,  // non-blocking valve open sequence in progress
     FILLING,        // valve fully open, water flowing
@@ -102,8 +103,8 @@ public:
     void loadConfig();
 
 private:
-    uint8_t m_powerPin;  // D6 — controls 12V supply to valve motor
-    uint8_t m_dirPin;    // D7 — controls direction (HIGH=close, LOW=open)
+    uint8_t m_powerPin;  // controls 12V supply to valve motor
+    uint8_t m_dirPin;    // controls direction (HIGH=close, LOW=open)
     Tank* m_tank3;
     FillState m_state;
     FillConfig m_config;
@@ -120,6 +121,7 @@ private:
     uint32_t m_openStart_ms;           // timestamp when OPEN mode started (for hard timeout)
     uint32_t m_lastDiagLog_ms;         // last diagnostic log during fill
     uint32_t m_sensorRecoveryStart_ms; // millis() when sensor first read valid after FAULT_SENSOR
+    uint8_t m_sensorBadStreak;         // consecutive bad sensor reads in IDLE/FILLING (gates FAULT_SENSOR)
 
     // Valve hardware control (immediate GPIO writes)
     void powerOn();

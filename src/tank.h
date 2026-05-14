@@ -53,9 +53,13 @@ public:
     // float mm() { return m() * 1000; }
     float pc() { return m_pc; }
     float L() { return m_L; }
-    bool connected() { return m_connected; }
-    bool sensorOk() const { return m_connected && m_sensorOk; }
+    bool connected() const { return m_initOk && m_failStreak < FAIL_STREAK_DISCONNECT; }
+    bool sensorOk() const { return connected() && m_sensorOk; }
     SensorFault sensorFault() const { return m_sensorFault; }
+    uint32_t lastReadOk_ms() const { return m_lastReadOk_ms; }
+    bool initOk() const { return m_initOk; }
+    uint8_t failStreak() const { return m_failStreak; }
+    uint8_t addr() const { return m_addr; }
     const char* sensorFaultStr() const
     {
         switch (m_sensorFault)
@@ -71,9 +75,14 @@ private:
     Adafruit_INA219 *m_ina219;
     // RunningAverage *m_mA;
     // RunningAverage *m_busV;
+    uint8_t m_addr = 0;                // I2C address (kept for active probe + retry begin())
     float m_dia_mm = 0;
     float m_maxH_mm = 0;
-    bool m_connected = false;
+    bool m_initOk = false;             // m_ina219->begin() has succeeded at least once
+    uint8_t m_failStreak = 0;          // consecutive failed I2C reads since last good
+    uint32_t m_lastReadOk_ms = 0;      // millis() of last successful read this wake
+    static constexpr uint8_t FAIL_STREAK_DISCONNECT = 3;
+    bool probeI2C();                   // ACK-only ping; true if device responded
     float m_mA = 0;
     float m_mm = 0;
     float m_L = 0;

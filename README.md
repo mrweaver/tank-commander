@@ -1,4 +1,4 @@
-# Tank Commander v0.6
+# Tank Commander v0.8.0
 
 ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvesting setup. Monitors water levels via 4–20 mA pressure transmitters, automates Tank 3 filling through a motorized ball valve, and integrates with Home Assistant via MQTT Discovery.
 
@@ -54,8 +54,8 @@ src/
 1. **Boot** — Relays driven HIGH (safe) before `pinMode`; serial, I2C, and tanks initialised.
 2. **Connect** — WiFi → mDNS (`TankCommander`) → OTA handler → MQTT broker.
 3. **HA Discovery** — Publishes auto-discovery configs for all entities.
-4. **Loop** — OTA handle → MQTT loop → decode commands → read sensors (every *interval* seconds) → publish state → run fill controller → sleep check.
-5. **Sleep** — Deep sleep (`WAKE_NO_RFCAL`) when no fill activity and keep-awake is off. Relays de-energised and sensors put in power-save mode before sleeping.
+4. **Loop** — OTA handle → MQTT loop → decode commands → immediately acknowledge accepted control changes over MQTT → read sensors (every *interval* seconds) → publish telemetry/state → run fill controller.
+5. **Power Mode** — The default build is always-online for reliable Home Assistant control. Optional deep sleep support remains available behind `TC_ALLOW_DEEP_SLEEP=1` for deployments that intentionally trade responsiveness for power saving.
 
 ### Fill Controller State Machine
 
@@ -76,7 +76,7 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 | Hard max          | 60 min  | Absolute non-configurable limit |
 | Cooldown          | 30 s    | Prevents rapid valve cycling    |
 
-Configuration is persisted to EEPROM (magic `0xFC02`, version 2).
+Configuration is persisted to EEPROM (magic `0xFC03`, version 3).
 
 ### Sensor Health Monitoring
 
@@ -141,6 +141,12 @@ pio run -t upload
 
 OTA is preconfigured in `platformio.ini` to target `10.0.0.68`. Change `upload_port` if your device has a different IP.
 
+### 3a. Optional Deep Sleep Mode
+
+The default firmware build keeps the controller online continuously so Home Assistant commands are confirmed immediately.
+
+If you explicitly want the older low-power behavior, add `-D TC_ALLOW_DEEP_SLEEP=1` to the target environment's `build_flags` in `platformio.ini`.
+
 ### 4. Serial Monitor
 
 ```bash
@@ -155,16 +161,18 @@ pio device monitor -b 115200
 - **Port:** 1883
 - **Client ID:** `TankCommander`
 - **Keep-alive:** Matches the sensor read interval (default 60 s)
+- **Availability topic:** `tanks/status` with payloads `online` / `offline`
 
 ### Published Topics
 
-| Topic              | Payload                                                   | Retained | Description           |
-| ------------------ | --------------------------------------------------------- | -------- | --------------------- |
-| `tanks`            | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No       | Device status         |
-| `tanks/tank1`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 1 readings       |
-| `tanks/tank2`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 2 readings       |
-| `tanks/tank3`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 3 readings       |
-| `tanks/fill/state` | JSON (see below)                                          | Yes      | Fill controller state |
+| Topic              | Payload                                                   | Retained | Description                               |
+| ------------------ | --------------------------------------------------------- | -------- | ----------------------------------------- |
+| `tanks`            | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No       | Device status and controller settings     |
+| `tanks/status`     | `online` / `offline`                                      | Yes      | MQTT availability for all discovered entities |
+| `tanks/tank1`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 1 readings                           |
+| `tanks/tank2`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 2 readings                           |
+| `tanks/tank3`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 3 readings                           |
+| `tanks/fill/state` | JSON (see below)                                          | Yes      | Fill controller state and persisted config |
 
 **Fill state payload:**
 ```json
@@ -201,6 +209,8 @@ pio device monitor -b 115200
 | `tanks/fill/command`              | `start` / `stop`  | Manual fill start/stop       |
 | `tanks/fill/command/override`     | `clear_fault`     | Clear fault state            |
 
+Accepted control commands are acknowledged immediately by republishing the relevant state topic. Home Assistant therefore tracks confirmed device state instead of waiting for the next telemetry interval.
+
 ### Calibration Example
 
 ```bash
@@ -211,24 +221,28 @@ mosquitto_pub -h your-broker.example.com -t "tanks/commands/cal1" -m "128.565775
 
 Tank Commander publishes MQTT Discovery messages automatically on boot. No manual HA configuration is needed — entities appear under the **Tank Commander** device.
 
+All discovered entities now share the `tanks/status` availability topic, and controllable entities are designed to reflect confirmed device state rather than optimistic UI state.
+
 ### Auto-Discovered Entities
 
-| Entity                | Type          | Description                        |
-| --------------------- | ------------- | ---------------------------------- |
-| Fill Enable           | Switch        | Master fill on/off                 |
-| Fill Command          | Switch        | Manual start/stop                  |
-| Fill Target Level     | Number        | Target % (10–100)                  |
-| Fill Low Threshold    | Number        | Auto-fill trigger % (5–95)         |
-| Fill Max Duration     | Number        | Timeout in minutes (1–60)          |
-| Fill State            | Sensor        | Current state machine state (enum) |
-| Sensor Health         | Binary Sensor | Tank 3 sensor OK/fault             |
-| Valve State           | Sensor        | Valve position/activity (enum)     |
-| Clear Fault           | Button        | Reset fault state                  |
-| Keep Awake            | Switch        | Prevent deep sleep                 |
-| Transmission Interval | Number        | Sensor read interval in seconds    |
-| Tank 1/2/3 Level (mm) | Sensor        | Water height in mm                 |
-| Tank 1/2/3 Level (%)  | Sensor        | Water height percentage            |
-| Tank 1/2/3 Volume (L) | Sensor        | Calculated volume                  |
+| Entity                | Type          | Description                              |
+| --------------------- | ------------- | ---------------------------------------- |
+| Valve Mode            | Select        | `closed` / `auto` / `open` control       |
+| Fill Target Level     | Number        | Target % (10–100)                        |
+| Fill Low Threshold    | Number        | Auto-fill trigger % (5–95)               |
+| Fill Max Duration     | Number        | Timeout in minutes (1–60)                |
+| Fill State            | Sensor        | Current state machine state (enum)       |
+| Valve State           | Sensor        | Valve position/activity (enum)           |
+| Fill Fault            | Sensor        | Fault classification                      |
+| Fill Elapsed          | Sensor        | Minutes elapsed in current fill          |
+| Fill Reason           | Sensor        | Why the current or last fill was started |
+| Clear Fault           | Button        | Reset fault state                        |
+| Keep Awake            | Switch        | Sleep override when deep sleep is enabled |
+| Keep Awake (HW)       | Binary Sensor | Hardware keep-awake input state          |
+| Transmission Interval | Number        | Sensor read interval in seconds          |
+| Tank 1/2/3 Level (mm) | Sensor        | Water height in mm                       |
+| Tank 1/2/3 Level (%)  | Sensor        | Water height percentage                  |
+| Tank 1/2/3 Volume (L) | Sensor        | Calculated volume                        |
 
 ### Example Automation
 
@@ -262,7 +276,7 @@ Managed by PlatformIO (`platformio.ini`):
 ## Safety Notes
 
 - **Relays are driven HIGH (de-energised) at the very start of `setup()`** before `pinMode` is called — the valve cannot actuate during boot.
-- **Both relays are de-energised before deep sleep** as a defence-in-depth measure.
+- **Both relays are de-energised before deep sleep** as a defence-in-depth measure when `TC_ALLOW_DEEP_SLEEP=1` is enabled.
 - **Hard maximum fill duration of 60 minutes** cannot be overridden via MQTT.
 - **Sensor fault detection** automatically halts any active fill.
 - **Non-blocking valve control** ensures the main loop continues running (OTA, MQTT, watchdog) while the valve is moving.
