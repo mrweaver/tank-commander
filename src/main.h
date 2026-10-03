@@ -17,6 +17,8 @@
 /// 26-05-07 - v0.7.4 - Active INA219 connectivity probe via R/W integrity test on register 0x05 (verifies ACK + register memory + bus paths); always attempt read() so disconnected sensors can recover; replace read_uptime_s with last_read_age_s; fill controller requires 3 consecutive bad reads before FAULT_SENSOR; fix latent POWERDOWN-after-construct bug
 /// 26-05-07 - v0.7.5 - Diagnostic surface: I2C bus scanner sensor + on-demand rescan button; per-tank mA/bus_V/sensor_fault/init_ok/fail_streak entities; fill fault/elapsed/reason entities; keepawake_hw binary sensor; last_read_age_s renders "never" instead of 4.3 billion seconds when no successful read this wake; library isAlive() method delegates probe to Adafruit_INA219
 /// 26-05-14 - v0.8.0 - First multi-platform controller release: ESP32 platform support via compatibility layer/build targets, richer tank and fill diagnostics, immediate MQTT command acknowledgements, retained availability for HA entities, controller-first always-online default build, README/docs aligned with the new control model
+/// 26-10-03 - v0.8.1 - Command latency: MQTT reconnect from loop() every 5s (was only at tx interval); fixed 15s keep-alive (interval changes no longer desync broker keep-alive); 2s socket timeout; retained-message wait only in deep-sleep builds and now decodes messages; Valve Mode "open" during valve close now reverses immediately instead of being lost
+/// 26-10-03 - v0.9.0 - Fill safety: valve driven closed on every boot; FAULT_TIMEOUT latched in EEPROM across reboots; fill progress (stall) detection -> no_progress fault; fault classification (fill_timeout / no_progress / overflow_cap); target clamped below 95% overflow cap; OPEN override not resumed after reboot; fill state published on every state change; fill rate + reset reason diagnostics; ESP8266 build targets retired
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -40,9 +42,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 8
+#define VER_MINOR 9
 #define VER_PATCH 0
-#define VER_DATE  "2026-05-14"
+#define VER_DATE  "2026-10-03"
 
 #define USE_BAT   0  // use battery monitor
 #define USE_BOOST 0  // use boost converter management
@@ -127,7 +129,10 @@ bool retainedKeepAwake            = false;                              // MQTT 
 char homeServer_ip[]              = MQTT_SERVER;                        // MQTT broker address
 uint16_t homeServer_port          = MQTT_PORT;                          // MQTT port
 const uint8_t mqttMaxRetry        = 5;                                  // MQTT maximum retry
-uint16_t mqttKeepAlive_s          = (tTxInterval_ms / 1000);            // [s]
+const uint16_t mqttKeepAlive_s    = 15;                                 // [s] fixed — independent of tx interval
+const uint16_t mqttSocketTimeout_s = 2;                                 // [s] bounds blocking in connect()
+const uint32_t mqttReconnectInterval_ms = 5000;                         // [ms] reconnect attempt cadence
+uint32_t lastMqttReconnectAttempt_ms    = 0;
 void mqttCallback(char* topic, uint8_t* payload, unsigned int length);  // MQTT callback
 char* mqttTopic;
 uint8_t* mqttPayload;
@@ -144,7 +149,7 @@ String i2cScan();
 void publishI2CScan();
 
 // MQTT Diagnostic Topics
-const char* mqttTopicDiagI2C      = "tanks/diag/i2c_scan";
+const char* mqttTopicDiagI2C       = "tanks/diag/i2c_scan";
 const char* mqttTopicDiagRescanCmd = "tanks/diag/i2c_scan/rescan";
 
 // MQTT Fill Topics

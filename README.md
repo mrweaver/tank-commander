@@ -1,6 +1,6 @@
-# Tank Commander v0.8.0
+# Tank Commander v0.9.0
 
-ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvesting setup. Monitors water levels via 4–20 mA pressure transmitters, automates Tank 3 filling through a motorized ball valve, and integrates with Home Assistant via MQTT Discovery.
+ESP32-based IoT monitoring and control system for a 3-tank rainwater harvesting setup. Monitors water levels via 4–20 mA pressure transmitters, automates Tank 3 filling through a motorized ball valve, and integrates with Home Assistant via MQTT Discovery.
 
 ## Hardware
 
@@ -8,7 +8,7 @@ ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvestin
 
 | Component                                   | Qty | Purpose                     |
 | ------------------------------------------- | --- | --------------------------- |
-| WeMos D1 Mini Lite (ESP8266)                | 1   | Microcontroller             |
+| MH-ET LIVE ESP32 MiniKit                    | 1   | Microcontroller             |
 | Adafruit INA219 breakout                    | 3   | 4–20 mA current measurement |
 | 4–20 mA liquid level transmitter (0–20 kPa) | 3   | Pressure head sensing       |
 | 3-wire 12V motorized ball valve             | 1   | Tank 3 fill control         |
@@ -17,14 +17,15 @@ ESP8266-based IoT monitoring and control system for a 3-tank rainwater harvestin
 
 ### Wiring / Pin Assignment
 
-| Pin | GPIO | Function              | Notes                                 |
-| --- | ---- | --------------------- | ------------------------------------- |
-| D1  | 5    | I2C SCL               | Shared bus for 3× INA219              |
-| D2  | 4    | I2C SDA               | Shared bus for 3× INA219              |
-| D5  | 14   | Keep Awake            | Pull LOW to prevent deep sleep        |
-| D6  | 12   | Valve Power Relay     | Active-LOW — energises 12V supply     |
-| D7  | 13   | Valve Direction Relay | Active-LOW — LOW = open, HIGH = close |
-| A0  | ADC0 | Battery Monitor       | Currently disabled (`USE_BAT=0`)      |
+| GPIO | Function              | Notes                                 |
+| ---- | --------------------- | ------------------------------------- |
+| 22   | I2C SCL               | Shared bus for 3× INA219              |
+| 21   | I2C SDA               | Shared bus for 3× INA219              |
+| 18   | Keep Awake            | Pull LOW to prevent deep sleep        |
+| 19   | Valve Power Relay     | Active-LOW — energises 12V supply     |
+| 23   | Valve Direction Relay | Active-LOW — LOW = open, HIGH = close |
+
+Pins are set per environment via `build_flags` in `platformio.ini`. The original WeMos D1 Mini Lite (ESP8266) build is retired.
 
 ### INA219 I2C Addresses
 
@@ -60,6 +61,8 @@ src/
 ### Fill Controller State Machine
 
 ```
+BOOT ──► VALVE_CLOSING ──► IDLE / DISABLED / FAULT_TIMEOUT (if latched)
+
 DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALVE_CLOSING ──► COOLDOWN ──► IDLE
                           │                              ▲
                           └── FAULT_SENSOR / FAULT_TIMEOUT
@@ -67,16 +70,30 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 
 **Valve actuation is non-blocking** (millis-based): 50 ms relay settle → 8.5 s valve travel.
 
+**The valve is driven closed on every boot.** De-energised relays only stop the motor, so without this a reboot mid-fill would leave the valve open while the controller believed it was closed. A manual `open` override is not resumed after a reboot (mode reverts to `auto`).
+
 | Parameter         | Default | Description                     |
 | ----------------- | ------- | ------------------------------- |
 | `fillEnabled`     | `false` | Master enable/disable           |
-| `targetLevel_pc`  | 80%     | Stop filling at this level      |
+| `targetLevel_pc`  | 80%     | Stop filling at this level (max 92%) |
 | `lowThreshold_pc` | 60%     | Auto-fill trigger               |
 | `maxDuration_min` | 30 min  | Abort fill safety timeout       |
 | Hard max          | 60 min  | Absolute non-configurable limit |
 | Cooldown          | 30 s    | Prevents rapid valve cycling    |
+| Overflow cap      | 95%     | Always closes the valve, even in `open` mode |
+| Progress check    | ≥ 0.5% rise per 5 min | Valve open but level not rising → `no_progress` fault |
 
 Configuration is persisted to EEPROM (magic `0xFC03`, version 3).
+
+#### Fill faults (`FAULT_TIMEOUT` state)
+
+| `fault`        | Cause                                                                 |
+| -------------- | --------------------------------------------------------------------- |
+| `fill_timeout` | Fill exceeded `maxDuration_min` (auto/manual) or the 60 min hard max  |
+| `no_progress`  | Level rose < 0.5% in a 5 min window — dry supply, stuck valve, draw matching inflow, or overflow/spill |
+| `overflow_cap` | Level reached 95%                                                     |
+
+These faults are **latched in EEPROM** and survive reboots — clear them with the **Clear Fill Fault** button (or by selecting `open`/`closed`). The measured rise rate is published as `fill_rate_pc_min` (**Fill Rate** entity); at ~0.43 %/min a 75 → 92% fill takes ~40 min, so set **Fill Max Duration** accordingly.
 
 ### Sensor Health Monitoring
 
@@ -134,18 +151,18 @@ pio run -t upload --upload-port /dev/ttyUSBx  # Linux
 **OTA upload (subsequent):**
 
 ```bash
-# Set the OTA password as an environment variable first
-export OTA_PASS="YourOTAPassword"
-pio run -t upload
+pio run -e mhetesp32minikit_ota -t upload
 ```
 
-OTA is preconfigured in `platformio.ini` to target `10.0.0.68`. Change `upload_port` if your device has a different IP.
+The OTA environment targets `TankCommander.local`. Change `upload_port` in `platformio.ini` if mDNS does not resolve on your network.
 
 ### 3a. Optional Deep Sleep Mode
 
 The default firmware build keeps the controller online continuously so Home Assistant commands are confirmed immediately.
 
 If you explicitly want the older low-power behavior, add `-D TC_ALLOW_DEEP_SLEEP=1` to the target environment's `build_flags` in `platformio.ini`.
+
+In the default build, the Home Assistant `Keep Awake` switch is not published because it has no effect unless deep sleep support is enabled.
 
 ### 4. Serial Monitor
 
@@ -160,19 +177,20 @@ pio device monitor -b 115200
 - **Host:** Defined in `secrets.h` (`MQTT_SERVER`)
 - **Port:** 1883
 - **Client ID:** `TankCommander`
-- **Keep-alive:** Matches the sensor read interval (default 60 s)
+- **Keep-alive:** Fixed 15 s (independent of the sensor read interval)
+- **Reconnect:** Retried from the main loop every 5 s with a 2 s socket timeout, so commands are not lost for a full read interval after a broker or WiFi outage
 - **Availability topic:** `tanks/status` with payloads `online` / `offline`
 
 ### Published Topics
 
-| Topic              | Payload                                                   | Retained | Description                               |
-| ------------------ | --------------------------------------------------------- | -------- | ----------------------------------------- |
-| `tanks`            | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No       | Device status and controller settings     |
+| Topic              | Payload                                                   | Retained | Description                                   |
+| ------------------ | --------------------------------------------------------- | -------- | --------------------------------------------- |
+| `tanks`            | JSON `{interval, interval_s, keepawake_sw, keepawake_hw}` | No       | Device status and controller settings         |
 | `tanks/status`     | `online` / `offline`                                      | Yes      | MQTT availability for all discovered entities |
-| `tanks/tank1`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 1 readings                           |
-| `tanks/tank2`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 2 readings                           |
-| `tanks/tank3`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 3 readings                           |
-| `tanks/fill/state` | JSON (see below)                                          | Yes      | Fill controller state and persisted config |
+| `tanks/tank1`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 1 readings                               |
+| `tanks/tank2`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 2 readings                               |
+| `tanks/tank3`      | JSON `{mm, pc, L, bus_V}`                                 | No       | Tank 3 readings                               |
+| `tanks/fill/state` | JSON (see below)                                          | Yes      | Fill controller state and persisted config    |
 
 **Fill state payload:**
 ```json
@@ -233,16 +251,19 @@ All discovered entities now share the `tanks/status` availability topic, and con
 | Fill Max Duration     | Number        | Timeout in minutes (1–60)                |
 | Fill State            | Sensor        | Current state machine state (enum)       |
 | Valve State           | Sensor        | Valve position/activity (enum)           |
-| Fill Fault            | Sensor        | Fault classification                      |
+| Fill Fault            | Sensor        | Fault classification                     |
 | Fill Elapsed          | Sensor        | Minutes elapsed in current fill          |
 | Fill Reason           | Sensor        | Why the current or last fill was started |
+| Fill Rate             | Sensor        | Level rise rate over last 5 min (%/min)  |
+| Last Reset Reason     | Sensor        | Why the controller last rebooted         |
 | Clear Fault           | Button        | Reset fault state                        |
-| Keep Awake            | Switch        | Sleep override when deep sleep is enabled |
 | Keep Awake (HW)       | Binary Sensor | Hardware keep-awake input state          |
 | Transmission Interval | Number        | Sensor read interval in seconds          |
 | Tank 1/2/3 Level (mm) | Sensor        | Water height in mm                       |
 | Tank 1/2/3 Level (%)  | Sensor        | Water height percentage                  |
 | Tank 1/2/3 Volume (L) | Sensor        | Calculated volume                        |
+
+When `TC_ALLOW_DEEP_SLEEP=1` is enabled, Home Assistant also discovers a `Keep Awake` switch that overrides sleep.
 
 ### Example Automation
 
@@ -268,7 +289,7 @@ Managed by PlatformIO (`platformio.ini`):
 | --------------------------------------------------------------------- | --------------------------- |
 | [Adafruit INA219](https://github.com/mrweaver/Adafruit_INA219) (fork) | 4–20 mA current measurement |
 | Adafruit BusIO                                                        | I2C abstraction             |
-| ArduinoJson ~6.16.0                                                   | JSON serialisation          |
+| ArduinoJson 7                                                         | JSON serialisation          |
 | PubSubClient                                                          | MQTT client                 |
 | RunningAverage                                                        | Sensor smoothing            |
 | ArduinoOTA (built-in)                                                 | Over-the-air updates        |
@@ -276,6 +297,9 @@ Managed by PlatformIO (`platformio.ini`):
 ## Safety Notes
 
 - **Relays are driven HIGH (de-energised) at the very start of `setup()`** before `pinMode` is called — the valve cannot actuate during boot.
+- **The valve is driven closed on every boot**, so a reboot mid-fill cannot leave it open and unmonitored.
+- **Fill faults are latched across reboots** — a crash or power blip cannot silently clear a fault and start a new fill.
+- **Fill progress monitoring** closes the valve if the level stops rising.
 - **Both relays are de-energised before deep sleep** as a defence-in-depth measure when `TC_ALLOW_DEEP_SLEEP=1` is enabled.
 - **Hard maximum fill duration of 60 minutes** cannot be overridden via MQTT.
 - **Sensor fault detection** automatically halts any active fill.

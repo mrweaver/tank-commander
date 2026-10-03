@@ -5,14 +5,24 @@
 #include <EEPROM.h>
 #include "tank.h"
 
-#define FILL_CONFIG_MAGIC   0xFC03
-#define FILL_CONFIG_VERSION 3
-#define FILL_CONFIG_ADDR    0
-#define FILL_EEPROM_SIZE    128
-#define FILL_COOLDOWN_MS    30000  // 30 second cooldown after fill stops
-#define SENSOR_RECOVERY_MS  30000  // sensor must read valid for 30s continuously to auto-clear fault
-#define FILL_HARD_MAX_MIN   60     // absolute backstop, not changeable via MQTT
-#define FILL_SENSOR_FAULT_THRESHOLD 3  // consecutive bad reads before transitioning to FAULT_SENSOR
+#define FILL_CONFIG_MAGIC           0xFC03
+#define FILL_CONFIG_VERSION         3
+#define FILL_CONFIG_ADDR            0
+#define FILL_EEPROM_SIZE            128
+#define FILL_COOLDOWN_MS            30000  // 30 second cooldown after fill stops
+#define SENSOR_RECOVERY_MS          30000  // sensor must read valid for 30s continuously to auto-clear fault
+#define FILL_HARD_MAX_MIN           60     // absolute backstop, not changeable via MQTT
+#define FILL_SENSOR_FAULT_THRESHOLD 3      // consecutive bad reads before transitioning to FAULT_SENSOR
+#define FILL_OVERFLOW_CAP_PC        95.0f  // safety overflow cap — always closes the valve, even in OPEN mode
+#define FILL_TARGET_MARGIN_PC       3.0f   // max target = cap - margin, so a normal fill never trips the cap
+#define FILL_TARGET_MAX_PC          (FILL_OVERFLOW_CAP_PC - FILL_TARGET_MARGIN_PC)
+
+// Fill progress (stall) detection: while the valve is open the level must rise
+// by at least FILL_PROGRESS_MIN_PC every FILL_PROGRESS_WINDOW_MS. Observed mains
+// fill rate is ~0.43 %/min (~2.2 % per window), so 0.5 % tolerates a moderate
+// simultaneous draw but catches a dry supply, stuck valve, or overflow/spill.
+#define FILL_PROGRESS_WINDOW_MS     (5UL * 60000UL)
+#define FILL_PROGRESS_MIN_PC        0.5f
 
 // Motorised ball valve timing
 #define VALVE_SETTLE_MS 50    // relay contact settle time before applying power
@@ -40,6 +50,16 @@ enum class FillReason : uint8_t
     HA_OVERRIDE
 };
 
+/// Classification of latched fill faults (FAULT_TIMEOUT state). Persisted to
+/// EEPROM so a reboot cannot silently clear a fault and start a fresh fill.
+enum class FillFault : uint8_t
+{
+    NONE         = 0,
+    TIMEOUT      = 1,  // fill ran longer than max duration / hard max
+    NO_PROGRESS  = 2,  // valve open but level not rising
+    OVERFLOW_CAP = 3   // level reached FILL_OVERFLOW_CAP_PC
+};
+
 /// Valve mode selector — determines how the fill valve behaves
 enum class ValveMode : uint8_t
 {
@@ -65,7 +85,8 @@ struct FillConfig
     float lowThreshold_pc;     // auto-fill trigger percentage (default 60)
     uint16_t maxDuration_min;  // max fill duration per session in minutes (default 30)
     uint8_t valveMode;         // 0=Closed, 1=Auto, 2=Open (see ValveMode enum)
-    uint8_t _reserved[7];      // padding for future fields
+    uint8_t latchedFault;      // FillFault — survives reboot until cleared (was _reserved[0], always 0)
+    uint8_t _reserved[6];      // padding for future fields
 };
 
 class FillController
@@ -97,6 +118,7 @@ public:
     bool keepAwake() const { return m_keepAwake; }
     const FillConfig& config() const { return m_config; }
     uint32_t fillElapsedMin() const;
+    float fillRatePcPerMin() const { return m_fillRate_pcpm; }  // last measured rise rate (0 when not filling)
 
     // Config persistence
     void saveConfig();
@@ -117,11 +139,15 @@ private:
     // Valve actuation sub-state
     ValvePhase m_valvePhase;
     uint32_t m_valvePhaseStart_ms;
-    FillState m_pendingState;          // state to transition to after VALVE_CLOSING completes
-    uint32_t m_openStart_ms;           // timestamp when OPEN mode started (for hard timeout)
-    uint32_t m_lastDiagLog_ms;         // last diagnostic log during fill
-    uint32_t m_sensorRecoveryStart_ms; // millis() when sensor first read valid after FAULT_SENSOR
-    uint8_t m_sensorBadStreak;         // consecutive bad sensor reads in IDLE/FILLING (gates FAULT_SENSOR)
+    FillState m_pendingState;           // state to transition to after VALVE_CLOSING completes
+    uint32_t m_openStart_ms;            // timestamp when OPEN mode started (for hard timeout)
+    uint32_t m_lastDiagLog_ms;          // last diagnostic log during fill
+    uint32_t m_sensorRecoveryStart_ms;  // millis() when sensor first read valid after FAULT_SENSOR
+    uint8_t m_sensorBadStreak;          // consecutive bad sensor reads in IDLE/FILLING (gates FAULT_SENSOR)
+    FillFault m_fault;                  // classification while in FAULT_TIMEOUT
+    float m_progressRef_pc;             // level at start of current progress window
+    uint32_t m_progressRef_ms;          // millis() at start of current progress window
+    float m_fillRate_pcpm;              // rise rate over the last completed window [%/min]
 
     // Valve hardware control (immediate GPIO writes)
     void powerOn();
@@ -133,6 +159,7 @@ private:
     // Valve sequence initiators
     void startValveOpen();
     void startValveClose(FillState afterClose);
+    void faultClose(FillFault fault);  // close valve, then latch FAULT_TIMEOUT with this classification
 
     // State machine
     void updateValveOpening();

@@ -20,7 +20,7 @@ Tank::Tank(uint8_t ina_addr, float dia_mm, float maxHead_mm)
     }
 
     useAverage(true);
-    m_ina219->setCalibration_16V_40mA(); // uses 1ohm shunt resistor
+    m_ina219->setCalibration_16V_40mA();  // uses 1ohm shunt resistor
     // Explicitly set mode before final writeConfig — setCalibration_16V_40mA
     // ends with writeConfig() but ina219_mode is still 0 (POWERDOWN) at that
     // point. Without this, the chip is left powered down until first read().
@@ -77,8 +77,8 @@ void Tank::read(uint8_t num)
     configReadout();
     m_ina219->triggerRead(true);
 
-    m_mA = m_ina219->getCurrent_mA();
-    m_failStreak = 0;
+    m_mA            = m_ina219->getCurrent_mA();
+    m_failStreak    = 0;
     m_lastReadOk_ms = millis();
     if (m_lastReadOk_ms == 0) m_lastReadOk_ms = 1;  // 0 reserved for "never"
 
@@ -89,7 +89,7 @@ void Tank::read(uint8_t num)
     }
     m_mm = m_mA * m_mA_to_mm_m_theory + m_mA_to_mm_b_theory;
     m_pc = (m_mm / m_maxH_mm) * 100;
-    m_L = (PI * pow(m_dia_mm / 2, 2) * m_mm * 1e-6);
+    m_L  = (PI * pow(m_dia_mm / 2, 2) * m_mm * 1e-6);
 }
 
 void Tank::configReadout(bool useAve, bool useTrig)
@@ -119,7 +119,7 @@ void Tank::evaluateHealth()
     if (m_mA < 3.5f)
     {
         m_sensorFault = SensorFault::WIRE_BREAK;
-        m_sensorOk = false;
+        m_sensorOk    = false;
         return;
     }
 
@@ -127,10 +127,10 @@ void Tank::evaluateHealth()
     if (m_mA > 21.0f)
     {
         m_sensorFault = SensorFault::SHORT_CIRCUIT;
-        m_sensorOk = false;
+        m_sensorOk    = false;
         return;
     }
 
     m_sensorFault = SensorFault::NONE;
-    m_sensorOk = true;
+    m_sensorOk    = true;
 }
