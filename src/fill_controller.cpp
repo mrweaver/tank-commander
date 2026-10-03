@@ -18,7 +18,12 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_fault(FillFault::NONE),
       m_progressRef_pc(0),
       m_progressRef_ms(0),
-      m_fillRate_pcpm(0)
+      m_fillRate_pcpm(0),
+      m_valvePos_ms(VALVE_FULL_TRAVEL_MS),  // unknown at boot — assume open; boot close re-references
+      m_moveStartPos_ms(VALVE_FULL_TRAVEL_MS),
+      m_moveTarget_ms(0),
+      m_moveDuration_ms(VALVE_TRAVEL_MS),
+      m_moveDirOpen(false)
 {
 }
 
@@ -159,17 +164,18 @@ void FillController::updateValveOpening()
             powerOn();
             m_valvePhase         = ValvePhase::POWERING;
             m_valvePhaseStart_ms = millis();
-            Serial.println("Valve: Power ON (opening).");
+            Serial.printf("Valve: Power ON (%s, %u ms).\n", m_moveDirOpen ? "opening" : "adjusting", m_moveDuration_ms);
         }
         break;
 
     case ValvePhase::POWERING:
-        if (elapsed >= VALVE_TRAVEL_MS)
+        if (elapsed >= m_moveDuration_ms)
         {
-            // Valve fully open — cut power, transition to FILLING
+            // Fill position reached — cut power, transition to FILLING
             powerOff();
-            m_valvePhase = ValvePhase::DONE;
-            Serial.println("Valve: Open complete, power OFF.");
+            m_valvePos_ms = m_moveTarget_ms;
+            m_valvePhase  = ValvePhase::DONE;
+            Serial.printf("Valve: Move complete at %u%%, power OFF.\n", valvePosPc());
             transitionTo(FillState::FILLING);
         }
         break;
@@ -296,7 +302,8 @@ void FillController::updateValveClosing()
         {
             // Valve fully closed — cut power, transition to pending state
             powerOff();
-            m_valvePhase = ValvePhase::DONE;
+            m_valvePos_ms = 0;  // end stop reached — position re-referenced
+            m_valvePhase  = ValvePhase::DONE;
             Serial.println("Valve: Close complete, power OFF.");
             transitionTo(m_pendingState);
         }
@@ -342,6 +349,21 @@ void FillController::setMaxDuration(uint16_t minutes)
     m_config.maxDuration_min = minutes;
     saveConfig();
     Serial.printf("Fill: max duration = %u min\n", minutes);
+}
+
+void FillController::setValveOpening(uint8_t pc)
+{
+    if (pc < FILL_OPENING_MIN_PC) pc = FILL_OPENING_MIN_PC;
+    if (pc > 100) pc = 100;
+    if (pc == valveOpeningPc())
+        return;
+    m_config.valveOpening_pc = pc;
+    saveConfig();
+    Serial.printf("Fill: valve opening = %u %%\n", pc);
+
+    // Apply live: move the valve to the new position without interrupting the fill
+    if (m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING)
+        startValveOpen();
 }
 
 void FillController::setValveMode(uint8_t mode)
@@ -508,6 +530,8 @@ const char* FillController::valveStateStr() const
     switch (m_state)
     {
     case FillState::VALVE_OPENING:
+        if (!m_moveDirOpen && m_valvePhase != ValvePhase::DONE)
+            return "adjusting";  // partial move toward closed (opening reduced mid-fill)
         switch (m_valvePhase)
         {
         case ValvePhase::SET_DIRECTION: return "opening_settle";
@@ -521,7 +545,7 @@ const char* FillController::valveStateStr() const
         case ValvePhase::POWERING:      return "closing_travel";
         default:                        return "closing";
         }
-    case FillState::FILLING:        return "open";
+    case FillState::FILLING:        return m_valvePos_ms >= VALVE_FULL_TRAVEL_MS ? "open" : "partial";
     case FillState::IDLE:
     case FillState::DISABLED_STATE:
     case FillState::COOLDOWN:
@@ -538,6 +562,32 @@ uint32_t FillController::fillElapsedMin() const
     if (m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING)
         return (millis() - m_fillStart_ms) / 60000UL;
     return 0;
+}
+
+uint8_t FillController::valveOpeningPc() const
+{
+    uint8_t pc = m_config.valveOpening_pc;
+    return (pc == 0 || pc > 100) ? 100 : pc;  // 0 = never set (pre-v0.10 EEPROM)
+}
+
+uint8_t FillController::valvePosPc() const
+{
+    return (uint8_t)((currentValvePos() * 100UL + VALVE_FULL_TRAVEL_MS / 2) / VALVE_FULL_TRAVEL_MS);
+}
+
+uint16_t FillController::currentValvePos() const
+{
+    if (m_valvePhase != ValvePhase::POWERING)
+        return m_valvePos_ms;
+    uint32_t el = millis() - m_valvePhaseStart_ms;
+    if (m_moveDirOpen)
+        return (uint16_t)min<uint32_t>(VALVE_FULL_TRAVEL_MS, m_moveStartPos_ms + el);
+    return el >= m_moveStartPos_ms ? 0 : (uint16_t)(m_moveStartPos_ms - el);
+}
+
+uint16_t FillController::openTarget_ms() const
+{
+    return (uint16_t)((uint32_t)VALVE_FULL_TRAVEL_MS * valveOpeningPc() / 100UL);
 }
 
 // Valve hardware control (immediate GPIO writes) /////////////////////////////////
@@ -572,23 +622,64 @@ void FillController::allOff()
 
 void FillController::startValveOpen()
 {
-    // Cut power first — may be reversing a valve that is mid-close
+    // Freeze the position estimate, then cut power — may be reversing a
+    // valve that is mid-close or re-targeting one that is mid-open.
+    uint16_t pos = currentValvePos();
     powerOff();
-
-    // Step 1: Set direction to Open, then wait for contacts to settle
-    dirOpen();
-    m_valvePhase         = ValvePhase::SET_DIRECTION;
+    m_valvePos_ms        = pos;
+    m_moveStartPos_ms    = pos;
+    m_moveTarget_ms      = openTarget_ms();
     m_valvePhaseStart_ms = millis();
     m_state              = FillState::VALVE_OPENING;
     m_keepAwake          = true;
-    Serial.println("Valve: Direction -> OPEN, waiting for settle.");
+
+    if (m_moveTarget_ms >= VALVE_FULL_TRAVEL_MS)
+    {
+        if (pos >= VALVE_FULL_TRAVEL_MS)
+        {
+            m_valvePhase = ValvePhase::DONE;  // already fully open
+            return;
+        }
+        // Full open: drive to the end stop (with margin) — re-references position
+        m_moveDirOpen     = true;
+        m_moveDuration_ms = VALVE_TRAVEL_MS;
+    }
+    else
+    {
+        // Partial open: run the motor for the difference from the estimated position
+        uint16_t diff = (m_moveTarget_ms > pos) ? (m_moveTarget_ms - pos) : (pos - m_moveTarget_ms);
+        if (diff < VALVE_MIN_MOVE_MS)
+        {
+            m_valvePos_ms = m_moveTarget_ms;
+            m_valvePhase  = ValvePhase::DONE;  // close enough — no move
+            return;
+        }
+        m_moveDirOpen     = (m_moveTarget_ms > pos);
+        m_moveDuration_ms = diff;
+    }
+
+    // Step 1: Set direction, then wait for contacts to settle
+    if (m_moveDirOpen)
+        dirOpen();
+    else
+        dirClose();
+    m_valvePhase = ValvePhase::SET_DIRECTION;
+    Serial.printf("Valve: %u%% -> %u%% (%s), waiting for settle.\n",
+                  (unsigned)(pos * 100UL / VALVE_FULL_TRAVEL_MS), valveOpeningPc(),
+                  m_moveDirOpen ? "open" : "close");
 }
 
 void FillController::startValveClose(FillState afterClose)
 {
-    // Cut power immediately as safety measure before switching direction
+    // Freeze the position estimate, then cut power before switching direction
+    uint16_t pos = currentValvePos();
     powerOff();
-    m_pendingState = afterClose;
+    m_pendingState    = afterClose;
+    m_valvePos_ms     = pos;
+    m_moveStartPos_ms = pos;
+    m_moveTarget_ms   = 0;
+    m_moveDirOpen     = false;
+    m_moveDuration_ms = VALVE_TRAVEL_MS;  // always a full close — re-references at the end stop
 
     // Step 1: Set direction to Close, then wait for contacts to settle
     dirClose();
@@ -668,7 +759,7 @@ void FillController::transitionTo(FillState newState)
         m_lastDiagLog_ms  = 0;  // force immediate diagnostic log
         m_progressRef_pc  = m_tank3->pc();
         m_progressRef_ms  = millis();
-        Serial.println("Fill: State -> FILLING (valve open).");
+        Serial.printf("Fill: State -> FILLING (valve %u%% open).\n", valvePosPc());
         break;
 
     case FillState::VALVE_CLOSING:
@@ -740,8 +831,9 @@ void FillController::setDefaults()
     m_config.fillEnabled     = false;
     m_config.targetLevel_pc  = 80.0f;
     m_config.lowThreshold_pc = 60.0f;
-    m_config.maxDuration_min = 30;
+    m_config.maxDuration_min = 240;
     m_config.valveMode       = (uint8_t)ValveMode::CLOSED;
     m_config.latchedFault    = (uint8_t)FillFault::NONE;
+    m_config.valveOpening_pc = 100;
     memset(m_config._reserved, 0, sizeof(m_config._reserved));
 }

@@ -2,7 +2,7 @@
 #include <Wire.h>
 
 static_assert(FILL_TARGET_MAX_PC == 92.0f, "update fill_target discovery max to match FILL_TARGET_MAX_PC");
-static_assert(FILL_HARD_MAX_MIN == 60, "update fill_max_duration discovery max to match FILL_HARD_MAX_MIN");
+static_assert(FILL_HARD_MAX_MIN == 480, "update fill_max_duration discovery max to match FILL_HARD_MAX_MIN");
 
 void setup(void)
 {
@@ -338,6 +338,7 @@ bool mqttConnect()
         mqttClient.subscribe(mqttTopicFillCfgLow);
         mqttClient.subscribe(mqttTopicFillCfgMaxDur);
         mqttClient.subscribe(mqttTopicFillCfgMode);
+        mqttClient.subscribe(mqttTopicFillCfgOpening);
         mqttClient.subscribe(mqttTopicFillCommand);
         mqttClient.subscribe(mqttTopicFillOverride);
         mqttClient.subscribe(mqttTopicDiagRescanCmd);
@@ -521,6 +522,11 @@ void mqttDecode()
         fillController->setMaxDuration(payload.toInt());
         publishFillAck = true;
     }
+    else if (topic == mqttTopicFillCfgOpening)
+    {
+        fillController->setValveOpening((uint8_t)constrain(payload.toInt(), 0, 100));
+        publishFillAck = true;
+    }
 
     // Fill controller commands
     if (topic == mqttTopicFillCommand)
@@ -618,6 +624,8 @@ bool mqttPublishFillState()
     uint8_t modeIdx         = fillController->config().valveMode;
     doc["mode"]             = modeNames[modeIdx > 2 ? 0 : modeIdx];
     doc["valve"]            = fillController->valveStateStr();
+    doc["opening_pc"]       = fillController->valveOpeningPc();
+    doc["valve_pos_pc"]     = fillController->valvePosPc();
 
     char buf[512];
     size_t n = serializeJson(doc, buf);
@@ -738,7 +746,7 @@ void mqttPublishHADiscovery()
                            "{\"command_topic\":\"tanks/fill/config/max_duration\","
                            "\"state_topic\":\"tanks/fill/state\","
                            "\"value_template\":\"{{ value_json.max_duration_min }}\","
-                           "\"min\":5,\"max\":60,\"step\":5,"  // max = FILL_HARD_MAX_MIN
+                           "\"min\":10,\"max\":480,\"step\":10,"  // max = FILL_HARD_MAX_MIN
                            "\"unit_of_measurement\":\"min\"}");
 
     // Fill State sensor
@@ -754,7 +762,25 @@ void mqttPublishHADiscovery()
                            "{\"state_topic\":\"tanks/fill/state\","
                            "\"value_template\":\"{{ value_json.valve }}\","
                            "\"device_class\":\"enum\","
-                           "\"options\":[\"opening_settle\",\"opening_travel\",\"opening\",\"closing_settle\",\"closing_travel\",\"closing\",\"open\",\"closed\",\"unknown\"],"
+                           "\"options\":[\"opening_settle\",\"opening_travel\",\"opening\",\"closing_settle\",\"closing_travel\",\"closing\",\"adjusting\",\"open\",\"partial\",\"closed\",\"unknown\"],"
+                           "\"icon\":\"mdi:valve\"}");
+
+    // Fill valve opening — trickle fill to limit the pressure drop on the house supply.
+    // Percent of valve travel TIME, not flow: ball valves are non-linear.
+    publishDiscoveryEntity("number", "fill_opening", "Fill Valve Opening",
+                           "{\"command_topic\":\"tanks/fill/config/opening\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.opening_pc }}\","
+                           "\"min\":10,\"max\":100,\"step\":5,"  // min = FILL_OPENING_MIN_PC
+                           "\"unit_of_measurement\":\"%\","
+                           "\"icon\":\"mdi:valve-open\"}");
+
+    // Estimated valve position (time-based)
+    publishDiscoveryEntity("sensor", "valve_position", "Valve Position",
+                           "{\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.valve_pos_pc }}\","
+                           "\"unit_of_measurement\":\"%\","
+                           "\"entity_category\":\"diagnostic\","
                            "\"icon\":\"mdi:valve\"}");
 
     // Clear Fault button

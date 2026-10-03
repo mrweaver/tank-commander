@@ -19,6 +19,7 @@
 /// 26-05-14 - v0.8.0 - First multi-platform controller release: ESP32 platform support via compatibility layer/build targets, richer tank and fill diagnostics, immediate MQTT command acknowledgements, retained availability for HA entities, controller-first always-online default build, README/docs aligned with the new control model
 /// 26-10-03 - v0.8.1 - Command latency: MQTT reconnect from loop() every 5s (was only at tx interval); fixed 15s keep-alive (interval changes no longer desync broker keep-alive); 2s socket timeout; retained-message wait only in deep-sleep builds and now decodes messages; Valve Mode "open" during valve close now reverses immediately instead of being lost
 /// 26-10-03 - v0.9.0 - Fill safety: valve driven closed on every boot; FAULT_TIMEOUT latched in EEPROM across reboots; fill progress (stall) detection -> no_progress fault; fault classification (fill_timeout / no_progress / overflow_cap); target clamped below 95% overflow cap; OPEN override not resumed after reboot; fill state published on every state change; fill rate + reset reason diagnostics; ESP8266 build targets retired
+/// 26-10-03 - v0.10.0 - Trickle fill: configurable valve opening (10-100% of travel time) via time-based position estimate re-referenced at end stops, applied live mid-fill; hard max fill 60 -> 480 min, default max duration 240 min
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -42,7 +43,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 9
+#define VER_MINOR 10
 #define VER_PATCH 0
 #define VER_DATE  "2026-10-03"
 
@@ -161,6 +162,7 @@ const char* mqttTopicFillCfgTarget  = "tanks/fill/config/target";
 const char* mqttTopicFillCfgLow     = "tanks/fill/config/low_threshold";
 const char* mqttTopicFillCfgMaxDur  = "tanks/fill/config/max_duration";
 const char* mqttTopicFillCfgMode    = "tanks/fill/config/mode";
+const char* mqttTopicFillCfgOpening = "tanks/fill/config/opening";
 
 // SENSOR AND CALIBRATION /////////////////////////////////////////////////////
 

@@ -1,4 +1,4 @@
-# Tank Commander v0.9.0
+# Tank Commander v0.10.0
 
 ESP32-based IoT monitoring and control system for a 3-tank rainwater harvesting setup. Monitors water levels via 4–20 mA pressure transmitters, automates Tank 3 filling through a motorized ball valve, and integrates with Home Assistant via MQTT Discovery.
 
@@ -77,8 +77,9 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 | `fillEnabled`     | `false` | Master enable/disable           |
 | `targetLevel_pc`  | 80%     | Stop filling at this level (max 92%) |
 | `lowThreshold_pc` | 60%     | Auto-fill trigger               |
-| `maxDuration_min` | 30 min  | Abort fill safety timeout       |
-| Hard max          | 60 min  | Absolute non-configurable limit |
+| `maxDuration_min` | 240 min | Abort fill safety timeout (10–480) |
+| `valveOpening_pc` | 100%    | Fill valve opening — set lower for a trickle fill (10–100) |
+| Hard max          | 480 min | Absolute non-configurable limit |
 | Cooldown          | 30 s    | Prevents rapid valve cycling    |
 | Overflow cap      | 95%     | Always closes the valve, even in `open` mode |
 | Progress check    | ≥ 0.5% rise per 5 min | Valve open but level not rising → `no_progress` fault |
@@ -89,11 +90,21 @@ Configuration is persisted to EEPROM (magic `0xFC03`, version 3).
 
 | `fault`        | Cause                                                                 |
 | -------------- | --------------------------------------------------------------------- |
-| `fill_timeout` | Fill exceeded `maxDuration_min` (auto/manual) or the 60 min hard max  |
+| `fill_timeout` | Fill exceeded `maxDuration_min` (auto/manual) or the 480 min hard max |
 | `no_progress`  | Level rose < 0.5% in a 5 min window — dry supply, stuck valve, draw matching inflow, or overflow/spill |
 | `overflow_cap` | Level reached 95%                                                     |
 
-These faults are **latched in EEPROM** and survive reboots — clear them with the **Clear Fill Fault** button (or by selecting `open`/`closed`). The measured rise rate is published as `fill_rate_pc_min` (**Fill Rate** entity); at ~0.43 %/min a 75 → 92% fill takes ~40 min, so set **Fill Max Duration** accordingly.
+These faults are **latched in EEPROM** and survive reboots — clear them with the **Clear Fill Fault** button (or by selecting `open`/`closed`). The measured rise rate is published as `fill_rate_pc_min` (**Fill Rate** entity); at ~0.43 %/min (full open) a 75 → 92% fill takes ~40 min and a 0 → 92% fill ~3.6 h, so set **Fill Max Duration** accordingly — longer when trickle filling.
+
+#### Trickle fill (partial valve opening)
+
+A full-open fill drops the house water pressure. **Fill Valve Opening** limits how far the valve opens during a fill.
+
+- The valve has no position feedback, so position is **estimated from motor run time** (8 s full travel). The estimate is re-referenced at the end stops: every full close resets it to 0%, and every full (100%) open sets it to 100%.
+- Partial opens run the motor for the difference from the estimated position. Each fill ends with a full close, so error cannot accumulate across fills.
+- Changes apply **live** during a fill (e.g. drop to 40% while someone showers) without interrupting the flow.
+- The value is a percentage of **travel time, not flow**. Ball valves are strongly non-linear and the first ~10–15% of travel is still sealed. Tune it by watching **Fill Rate** and the house pressure — e.g. start at 50% and adjust.
+- Fill Valve Opening applies to every fill (auto, manual start, and the `open` override). The `valve` state reports `partial` while filling below 100%, and `adjusting` while moving partway closed.
 
 ### Sensor Health Monitoring
 
@@ -207,7 +218,9 @@ pio device monitor -b 115200
   "fault": "none",
   "fill_elapsed_min": 0,
   "fill_reason": "none",
-  "valve": "closed"
+  "valve": "closed",
+  "opening_pc": 100,
+  "valve_pos_pc": 0
 }
 ```
 
@@ -223,7 +236,8 @@ pio device monitor -b 115200
 | `tanks/fill/config/enabled`       | `true` / `false`  | Enable/disable fill system   |
 | `tanks/fill/config/target`        | `10`–`100`        | Fill target percentage       |
 | `tanks/fill/config/low_threshold` | `5`–`95`          | Auto-fill trigger percentage |
-| `tanks/fill/config/max_duration`  | `1`–`60`          | Max fill duration (minutes)  |
+| `tanks/fill/config/max_duration`  | `10`–`480`        | Max fill duration (minutes)  |
+| `tanks/fill/config/opening`       | `10`–`100`        | Fill valve opening (%)       |
 | `tanks/fill/command`              | `start` / `stop`  | Manual fill start/stop       |
 | `tanks/fill/command/override`     | `clear_fault`     | Clear fault state            |
 
@@ -248,7 +262,9 @@ All discovered entities now share the `tanks/status` availability topic, and con
 | Valve Mode            | Select        | `closed` / `auto` / `open` control       |
 | Fill Target Level     | Number        | Target % (10–100)                        |
 | Fill Low Threshold    | Number        | Auto-fill trigger % (5–95)               |
-| Fill Max Duration     | Number        | Timeout in minutes (1–60)                |
+| Fill Max Duration     | Number        | Timeout in minutes (10–480)              |
+| Fill Valve Opening    | Number        | Trickle fill: valve opening % (10–100)   |
+| Valve Position        | Sensor        | Estimated valve position (%)             |
 | Fill State            | Sensor        | Current state machine state (enum)       |
 | Valve State           | Sensor        | Valve position/activity (enum)           |
 | Fill Fault            | Sensor        | Fault classification                     |
@@ -301,7 +317,7 @@ Managed by PlatformIO (`platformio.ini`):
 - **Fill faults are latched across reboots** — a crash or power blip cannot silently clear a fault and start a new fill.
 - **Fill progress monitoring** closes the valve if the level stops rising.
 - **Both relays are de-energised before deep sleep** as a defence-in-depth measure when `TC_ALLOW_DEEP_SLEEP=1` is enabled.
-- **Hard maximum fill duration of 60 minutes** cannot be overridden via MQTT.
+- **Hard maximum fill duration of 480 minutes** cannot be overridden via MQTT; fill progress monitoring is the primary guard against a stalled or spilling fill.
 - **Sensor fault detection** automatically halts any active fill.
 - **Non-blocking valve control** ensures the main loop continues running (OTA, MQTT, watchdog) while the valve is moving.
 

@@ -11,7 +11,9 @@
 #define FILL_EEPROM_SIZE            128
 #define FILL_COOLDOWN_MS            30000  // 30 second cooldown after fill stops
 #define SENSOR_RECOVERY_MS          30000  // sensor must read valid for 30s continuously to auto-clear fault
-#define FILL_HARD_MAX_MIN           60     // absolute backstop, not changeable via MQTT
+#define FILL_HARD_MAX_MIN           480    // absolute backstop, not changeable via MQTT (8 h — a full
+                                           // 0->92% fill takes ~3.6 h at full flow, longer when trickling)
+#define FILL_OPENING_MIN_PC         10     // smallest partial opening accepted (ball is still sealed below ~10-15%)
 #define FILL_SENSOR_FAULT_THRESHOLD 3      // consecutive bad reads before transitioning to FAULT_SENSOR
 #define FILL_OVERFLOW_CAP_PC        95.0f  // safety overflow cap — always closes the valve, even in OPEN mode
 #define FILL_TARGET_MARGIN_PC       3.0f   // max target = cap - margin, so a normal fill never trips the cap
@@ -26,7 +28,9 @@
 
 // Motorised ball valve timing
 #define VALVE_SETTLE_MS 50    // relay contact settle time before applying power
-#define VALVE_TRAVEL_MS 8500  // full valve travel time (8s physical + 500ms margin)
+#define VALVE_TRAVEL_MS      8500  // end-stop move time (8s physical + 500ms margin) — re-references position
+#define VALVE_FULL_TRAVEL_MS 8000  // physical closed->open travel; basis for partial-opening move times
+#define VALVE_MIN_MOVE_MS    150   // partial moves shorter than this are skipped
 
 /// Fill controller states. The valve states (VALVE_OPENING, VALVE_CLOSING)
 /// run a non-blocking sub-sequence to actuate the 3-wire motorised ball valve.
@@ -86,7 +90,8 @@ struct FillConfig
     uint16_t maxDuration_min;  // max fill duration per session in minutes (default 30)
     uint8_t valveMode;         // 0=Closed, 1=Auto, 2=Open (see ValveMode enum)
     uint8_t latchedFault;      // FillFault — survives reboot until cleared (was _reserved[0], always 0)
-    uint8_t _reserved[6];      // padding for future fields
+    uint8_t valveOpening_pc;   // fill opening as % of travel time, 10-100 (was _reserved[1]; 0 => 100)
+    uint8_t _reserved[5];      // padding for future fields
 };
 
 class FillController
@@ -103,6 +108,7 @@ public:
     void setLowThreshold(float pc);
     void setMaxDuration(uint16_t minutes);
     void setValveMode(uint8_t mode);
+    void setValveOpening(uint8_t pc);  // trickle fill — applied live if a fill is in progress
     void commandStart();
     void commandStop();
     void commandClearFault();
@@ -119,6 +125,8 @@ public:
     const FillConfig& config() const { return m_config; }
     uint32_t fillElapsedMin() const;
     float fillRatePcPerMin() const { return m_fillRate_pcpm; }  // last measured rise rate (0 when not filling)
+    uint8_t valveOpeningPc() const;                             // configured fill opening
+    uint8_t valvePosPc() const;                                 // estimated current valve position
 
     // Config persistence
     void saveConfig();
@@ -148,6 +156,17 @@ private:
     float m_progressRef_pc;             // level at start of current progress window
     uint32_t m_progressRef_ms;          // millis() at start of current progress window
     float m_fillRate_pcpm;              // rise rate over the last completed window [%/min]
+
+    // Time-based valve position estimate. 0 = closed, VALVE_FULL_TRAVEL_MS = open.
+    // Re-referenced at the end stops: every full close sets 0, every full open
+    // sets VALVE_FULL_TRAVEL_MS. Partial moves run the motor for the difference.
+    uint16_t m_valvePos_ms;     // estimated position when the motor is not running
+    uint16_t m_moveStartPos_ms;  // position at the start of the current move
+    uint16_t m_moveTarget_ms;    // position at the end of the current move
+    uint16_t m_moveDuration_ms;  // motor run time for the current move
+    bool m_moveDirOpen;          // direction of the current move
+    uint16_t currentValvePos() const;
+    uint16_t openTarget_ms() const;
 
     // Valve hardware control (immediate GPIO writes)
     void powerOn();
