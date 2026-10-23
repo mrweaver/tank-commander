@@ -789,12 +789,12 @@ void mqttPublishHADiscovery()
                            "\"payload_press\":\"clear_fault\","
                            "\"icon\":\"mdi:alert-remove\"}");
 
-    // Fill fault classification (sensor_* / fill_timeout / no_progress / overflow_cap / none)
+    // Fill fault classification (sensor_* / fill_timeout / no_progress / overflow_cap / valve_stuck_open / none)
     publishDiscoveryEntity("sensor", "fill_fault", "Fill Fault",
                            "{\"state_topic\":\"tanks/fill/state\","
                            "\"value_template\":\"{{ value_json.fault }}\","
                            "\"device_class\":\"enum\","
-                           "\"options\":[\"none\",\"sensor_wire_break\",\"sensor_short\",\"sensor_unknown\",\"fill_timeout\",\"no_progress\",\"overflow_cap\"],"
+                           "\"options\":[\"none\",\"sensor_wire_break\",\"sensor_short\",\"sensor_unknown\",\"fill_timeout\",\"no_progress\",\"overflow_cap\",\"valve_stuck_open\"],"
                            "\"entity_category\":\"diagnostic\","
                            "\"icon\":\"mdi:alert-circle-outline\"}");
 
@@ -806,12 +806,12 @@ void mqttPublishHADiscovery()
                            "\"entity_category\":\"diagnostic\","
                            "\"icon\":\"mdi:timer-sand\"}");
 
-    // Fill reason (auto_low / manual_command / ha_override / none)
+    // Fill reason (auto_low / manual_command / ha_override / valve_reclose / none)
     publishDiscoveryEntity("sensor", "fill_reason", "Fill Reason",
                            "{\"state_topic\":\"tanks/fill/state\","
                            "\"value_template\":\"{{ value_json.fill_reason }}\","
                            "\"device_class\":\"enum\","
-                           "\"options\":[\"none\",\"auto_low\",\"manual_command\",\"ha_override\"],"
+                           "\"options\":[\"none\",\"auto_low\",\"manual_command\",\"ha_override\",\"valve_reclose\"],"
                            "\"entity_category\":\"diagnostic\","
                            "\"icon\":\"mdi:information-outline\"}");
 

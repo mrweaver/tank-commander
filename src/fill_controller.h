@@ -26,6 +26,24 @@
 #define FILL_PROGRESS_WINDOW_MS     (5UL * 60000UL)
 #define FILL_PROGRESS_MIN_PC        0.5f
 
+// Post-close leak check: the valve has no position feedback, so a valve that
+// jams open still reports "closed" (22 Oct 2026: Tank 3 overflowed for 5 h).
+// After every full close, watch Tank 3 for LEAK_WATCH_MS. A rise of at least
+// LEAK_RISE_MIN_PC in a LEAK_CHECK_WINDOW_MS window means water is still coming
+// in, so cycle the valve fully open and closed again to free it. Full flow is
+// ~0.6 %/min (~3 % per window); 1.5 % stays clear of sensor noise (~1 %).
+// Once the tank overflows the level goes flat (~98.5 % on 22 Oct), so a level
+// that has climbed past LEAK_OVERFLOW_PC since the close also counts as still
+// leaking. It sits above the 95 % cap so a valve freed on the way up still passes.
+// After LEAK_RECLOSE_ATTEMPTS failed cycles the valve_stuck_open fault latches,
+// and a cycle is retried every LEAK_RETRY_MS while it is still rising or overflowing.
+#define LEAK_WATCH_MS               (30UL * 60000UL)
+#define LEAK_CHECK_WINDOW_MS        (5UL * 60000UL)
+#define LEAK_RISE_MIN_PC            1.5f
+#define LEAK_OVERFLOW_PC            97.0f
+#define LEAK_RECLOSE_ATTEMPTS       5
+#define LEAK_RETRY_MS               (15UL * 60000UL)
+
 // Motorised ball valve timing
 #define VALVE_SETTLE_MS 50    // relay contact settle time before applying power
 #define VALVE_TRAVEL_MS      8500  // end-stop move time (8s physical + 500ms margin) — re-references position
@@ -51,7 +69,8 @@ enum class FillReason : uint8_t
     NONE,
     AUTO_LOW,
     MANUAL_COMMAND,
-    HA_OVERRIDE
+    HA_OVERRIDE,
+    VALVE_RECLOSE  // open/close cycle to free a valve that did not seal
 };
 
 /// Classification of latched fill faults (FAULT_TIMEOUT state). Persisted to
@@ -61,7 +80,8 @@ enum class FillFault : uint8_t
     NONE         = 0,
     TIMEOUT      = 1,  // fill ran longer than max duration / hard max
     NO_PROGRESS  = 2,  // valve open but level not rising
-    OVERFLOW_CAP = 3   // level reached FILL_OVERFLOW_CAP_PC
+    OVERFLOW_CAP = 3,  // level reached FILL_OVERFLOW_CAP_PC
+    VALVE_STUCK  = 4   // still leaking after LEAK_RECLOSE_ATTEMPTS reclose cycles
 };
 
 /// Valve mode selector — determines how the fill valve behaves
@@ -121,7 +141,7 @@ public:
     const char* valveStateStr() const;
     bool isFilling() const { return m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING; }
     bool isValveBusy() const { return m_state == FillState::VALVE_OPENING || m_state == FillState::VALVE_CLOSING; }
-    bool keepAwake() const { return m_keepAwake; }
+    bool keepAwake() const { return m_keepAwake || m_leakWatch; }
     const FillConfig& config() const { return m_config; }
     uint32_t fillElapsedMin() const;
     float fillRatePcPerMin() const { return m_fillRate_pcpm; }  // last measured rise rate (0 when not filling)
@@ -157,6 +177,18 @@ private:
     uint32_t m_progressRef_ms;          // millis() at start of current progress window
     float m_fillRate_pcpm;              // rise rate over the last completed window [%/min]
 
+    // Post-close leak check (see LEAK_* above)
+    bool m_leakWatch;                   // watching for a rise after a close
+    bool m_reclosing;                   // current open/close cycle is a reclose attempt
+    uint8_t m_leakAttempts;             // reclose cycles since the last normal close (incl. slow retries)
+    uint32_t m_leakWatchStart_ms;       // millis() of the close that armed the watch
+    uint32_t m_leakRef_ms;              // start of the current check window
+    float m_leakRef_pc;                 // level at the start of the current check window
+    bool m_leakRefValid;                // m_leakRef_pc holds a valid reading
+    float m_leakStart_pc;               // level just after the close that armed the watch
+    bool m_leakStartValid;              // m_leakStart_pc holds a valid reading
+    uint32_t m_leakLastAttempt_ms;      // millis() of the last reclose cycle
+
     // Time-based valve position estimate. 0 = closed, VALVE_FULL_TRAVEL_MS = open.
     // Re-referenced at the end stops: every full close sets 0, every full open
     // sets VALVE_FULL_TRAVEL_MS. Partial moves run the motor for the difference.
@@ -179,6 +211,9 @@ private:
     void startValveOpen();
     void startValveClose(FillState afterClose);
     void faultClose(FillFault fault);  // close valve, then latch FAULT_TIMEOUT with this classification
+    void startReclose(FillState afterClose);  // full open then full close, to free a valve that did not seal
+    void armLeakWatch();
+    void updateLeakWatch();
 
     // State machine
     void updateValveOpening();
