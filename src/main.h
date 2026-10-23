@@ -20,6 +20,7 @@
 /// 26-10-03 - v0.8.1 - Command latency: MQTT reconnect from loop() every 5s (was only at tx interval); fixed 15s keep-alive (interval changes no longer desync broker keep-alive); 2s socket timeout; retained-message wait only in deep-sleep builds and now decodes messages; Valve Mode "open" during valve close now reverses immediately instead of being lost
 /// 26-10-03 - v0.9.0 - Fill safety: valve driven closed on every boot; FAULT_TIMEOUT latched in EEPROM across reboots; fill progress (stall) detection -> no_progress fault; fault classification (fill_timeout / no_progress / overflow_cap); target clamped below 95% overflow cap; OPEN override not resumed after reboot; fill state published on every state change; fill rate + reset reason diagnostics; ESP8266 build targets retired
 /// 26-10-03 - v0.10.0 - Trickle fill: configurable valve opening (10-100% of travel time) via time-based position estimate re-referenced at end stops, applied live mid-fill; hard max fill 60 -> 480 min, default max duration 240 min
+/// 26-10-24 - v0.11.0 - Post-close leak check: after every close, a 1.5% rise in 5 min, or climbing past 97% (overflowing), within 30 min means the valve did not seal; cycle it fully open and closed up to 5 times, then latch valve_stuck_open fault and retry every 15 min while still leaking; new fill_reason valve_reclose
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -43,9 +44,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 10
+#define VER_MINOR 11
 #define VER_PATCH 0
-#define VER_DATE  "2026-10-03"
+#define VER_DATE  "2026-10-24"
 
 #define USE_BAT   0  // use battery monitor
 #define USE_BOOST 0  // use boost converter management

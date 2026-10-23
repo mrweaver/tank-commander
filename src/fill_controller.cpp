@@ -19,6 +19,16 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_progressRef_pc(0),
       m_progressRef_ms(0),
       m_fillRate_pcpm(0),
+      m_leakWatch(false),
+      m_reclosing(false),
+      m_leakAttempts(0),
+      m_leakWatchStart_ms(0),
+      m_leakRef_ms(0),
+      m_leakRef_pc(0),
+      m_leakRefValid(false),
+      m_leakStart_pc(0),
+      m_leakStartValid(false),
+      m_leakLastAttempt_ms(0),
       m_valvePos_ms(VALVE_FULL_TRAVEL_MS),  // unknown at boot — assume open; boot close re-references
       m_moveStartPos_ms(VALVE_FULL_TRAVEL_MS),
       m_moveTarget_ms(0),
@@ -75,6 +85,15 @@ void FillController::begin()
 
 void FillController::update()
 {
+    // Post-close leak check runs whenever the valve is meant to be shut
+    if (m_leakWatch && (m_state == FillState::IDLE || m_state == FillState::COOLDOWN ||
+                        m_state == FillState::DISABLED_STATE || m_state == FillState::FAULT_TIMEOUT))
+    {
+        updateLeakWatch();
+        if (m_state == FillState::VALVE_OPENING)
+            return;  // reclose cycle started
+    }
+
     switch (m_state)
     {
     case FillState::DISABLED_STATE:
@@ -176,13 +195,19 @@ void FillController::updateValveOpening()
             m_valvePos_ms = m_moveTarget_ms;
             m_valvePhase  = ValvePhase::DONE;
             Serial.printf("Valve: Move complete at %u%%, power OFF.\n", valvePosPc());
-            transitionTo(FillState::FILLING);
+            if (m_reclosing)
+                startValveClose(m_pendingState);  // reclose cycle: open end reached, close again
+            else
+                transitionTo(FillState::FILLING);
         }
         break;
 
     case ValvePhase::DONE:
         // Should not reach here, but just in case
-        transitionTo(FillState::FILLING);
+        if (m_reclosing)
+            startValveClose(m_pendingState);
+        else
+            transitionTo(FillState::FILLING);
         break;
     }
 }
@@ -306,12 +331,14 @@ void FillController::updateValveClosing()
             m_valvePhase  = ValvePhase::DONE;
             Serial.println("Valve: Close complete, power OFF.");
             transitionTo(m_pendingState);
+            armLeakWatch();
         }
         break;
 
     case ValvePhase::DONE:
         // Should not reach here, but just in case
         transitionTo(m_pendingState);
+        armLeakWatch();
         break;
     }
 }
@@ -465,6 +492,7 @@ void FillController::commandClearFault()
     else if (m_state == FillState::FAULT_TIMEOUT)
     {
         Serial.println("Fill: Timeout fault cleared.");
+        m_leakWatch = false;  // valve inspected — don't re-latch valve_stuck_open straight away
         transitionTo(FillState::IDLE);
     }
     else
@@ -507,6 +535,7 @@ const char* FillController::faultStr() const
         {
         case FillFault::NO_PROGRESS:  return "no_progress";
         case FillFault::OVERFLOW_CAP: return "overflow_cap";
+        case FillFault::VALVE_STUCK:  return "valve_stuck_open";
         default:                      return "fill_timeout";
         }
     default: return "none";
@@ -521,6 +550,7 @@ const char* FillController::fillReasonStr() const
     case FillReason::AUTO_LOW:       return "auto_low";
     case FillReason::MANUAL_COMMAND: return "manual_command";
     case FillReason::HA_OVERRIDE:    return "ha_override";
+    case FillReason::VALVE_RECLOSE:  return "valve_reclose";
     default:                         return "unknown";
     }
 }
@@ -701,6 +731,115 @@ void FillController::faultClose(FillFault fault)
     startValveClose(FillState::FAULT_TIMEOUT);
 }
 
+void FillController::startReclose(FillState afterClose)
+{
+    // Drive the full travel both ways (ignoring any trickle opening) to give a
+    // jammed ball the most force and time to move, then close as normal.
+    powerOff();
+    m_reclosing          = true;
+    m_leakLastAttempt_ms = millis();
+    m_fillReason         = FillReason::VALVE_RECLOSE;
+    m_fillStart_ms       = millis();
+    m_pendingState       = afterClose;
+    m_moveStartPos_ms    = m_valvePos_ms;
+    m_moveTarget_ms      = VALVE_FULL_TRAVEL_MS;
+    m_moveDirOpen        = true;
+    m_moveDuration_ms    = VALVE_TRAVEL_MS;
+
+    dirOpen();
+    m_valvePhase         = ValvePhase::SET_DIRECTION;
+    m_valvePhaseStart_ms = millis();
+    m_state              = FillState::VALVE_OPENING;
+    m_keepAwake          = true;
+    Serial.printf("Fill: Reclose attempt %u — cycling valve open then closed.\n", m_leakAttempts);
+}
+
+// Post-close leak check //////////////////////////////////////////////////////////
+
+void FillController::armLeakWatch()
+{
+    // A reclose cycle keeps its attempt count and the level at the original
+    // close; any other close starts afresh
+    if (!m_reclosing)
+    {
+        m_leakAttempts   = 0;
+        m_leakStartValid = false;
+    }
+    m_reclosing         = false;
+    m_leakWatch         = true;
+    m_leakWatchStart_ms = millis();
+    m_leakRef_ms        = millis();
+    m_leakRefValid      = false;  // reference taken on the next valid read
+}
+
+void FillController::updateLeakWatch()
+{
+    if (!m_tank3->connected() || !m_tank3->sensorOk())
+    {
+        // No trustworthy level — restart the window once the sensor is back
+        m_leakRefValid = false;
+        return;
+    }
+    uint32_t now = millis();
+    if (!m_leakStartValid)
+    {
+        m_leakStart_pc   = m_tank3->pc();
+        m_leakStartValid = true;
+    }
+    if (!m_leakRefValid)
+    {
+        m_leakRef_pc   = m_tank3->pc();
+        m_leakRef_ms   = now;
+        m_leakRefValid = true;
+        return;
+    }
+    if ((now - m_leakRef_ms) < LEAK_CHECK_WINDOW_MS)
+        return;
+
+    float rise_pc = m_tank3->pc() - m_leakRef_pc;
+    m_leakRef_pc  = m_tank3->pc();
+    m_leakRef_ms  = now;
+
+    // Once Tank 3 overflows its level stops rising, so climbing to the overflow
+    // since the close also counts as still leaking. A flat level there can't
+    // show whether a reclose worked, so this errs towards more cycles: a cycle
+    // on a sealed valve only lets in a few litres.
+    bool rising   = rise_pc >= LEAK_RISE_MIN_PC;
+    bool overflow = m_tank3->pc() >= LEAK_OVERFLOW_PC && m_leakStart_pc < LEAK_OVERFLOW_PC;
+    bool latched  = m_fault == FillFault::VALVE_STUCK;
+
+    if (!rising && !overflow)
+    {
+        if ((now - m_leakWatchStart_ms) >= LEAK_WATCH_MS)
+        {
+            if (m_leakAttempts > 0)
+                Serial.printf("Fill: Leak check passed after %u reclose attempt(s).\n", m_leakAttempts);
+            m_leakWatch = false;
+        }
+        return;
+    }
+
+    Serial.printf("Fill: Level rose %.2f%% in %lu min (now %.1f%%, %.1f%% at close) with the valve closed — valve may be stuck open.\n",
+                  rise_pc, LEAK_CHECK_WINDOW_MS / 60000UL, m_tank3->pc(), m_leakStart_pc);
+
+    if (m_leakAttempts < LEAK_RECLOSE_ATTEMPTS)
+    {
+        m_leakAttempts++;
+        startReclose(m_state == FillState::COOLDOWN ? FillState::IDLE : m_state);
+    }
+    else if (!latched || (now - m_leakLastAttempt_ms) >= LEAK_RETRY_MS)
+    {
+        // Quick attempts used up: latch the fault (blocks auto-fill until cleared)
+        // and keep retrying at a slower pace while it is still rising or overflowing.
+        if (!latched)
+            Serial.printf("Fill: Still leaking after %u reclose attempts — valve_stuck_open latched.\n",
+                          m_leakAttempts);
+        m_fault = FillFault::VALVE_STUCK;
+        if (m_leakAttempts < 0xFF) m_leakAttempts++;
+        startReclose(FillState::FAULT_TIMEOUT);
+    }
+}
+
 // State transitions ///////////////////////////////////////////////////////////////
 
 void FillController::transitionTo(FillState newState)
@@ -748,6 +887,9 @@ void FillController::transitionTo(FillState newState)
 
     case FillState::VALVE_OPENING:
         m_fillStart_ms = millis();
+        m_leakWatch    = false;  // a real fill — the next close re-arms the leak check
+        m_reclosing    = false;
+        m_leakAttempts = 0;
         startValveOpen();
         Serial.printf("Fill: State -> VALVE_OPENING (reason: %s).\n", fillReasonStr());
         break;
