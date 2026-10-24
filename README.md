@@ -83,7 +83,7 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 | Cooldown          | 30 s    | Prevents rapid valve cycling    |
 | Overflow cap      | 95%     | Always closes the valve, even in `open` mode |
 | Progress check    | ≥ 0.5% rise per 5 min | Valve open but level not rising → `no_progress` fault |
-| Leak check        | 5 min average stays < 3% above the level at close, for 30 min after every close | Level still rising (or overflowing) with the valve closed → reclose cycles, then `valve_stuck_open` fault |
+| Leak check        | 5 min average stays < 3% above the level at close, for 30 min after every close (all adjustable) | Level still rising (or overflowing) with the valve closed → reclose cycles, then `valve_stuck_open` fault |
 
 Configuration is persisted to EEPROM (magic `0xFC03`, version 3).
 
@@ -100,10 +100,11 @@ These faults are **latched in EEPROM** and survive reboots — clear them with t
 
 #### Stuck-open valve (post-close leak check)
 
-The valve has no position feedback, so a valve that jams open still reports `closed`. After every full close (end of a fill, a fault, a stop, or the boot close) the controller watches Tank 3 for 30 min, reading it every 10 s. If the 5 min average climbs 3% or more above the first reading after the close, water is still coming in, so it **cycles the valve fully open and then fully closed** (full 8.5 s travel both ways, ignoring Fill Valve Opening) to free it. `fill_reason` reports `valve_reclose` during a cycle.
+The valve has no position feedback, so a valve that jams open still reports `closed`. After every full close (end of a fill, a fault, a stop, or the boot close) the controller watches Tank 3 for 30 min (by default), reading it every 10 s. If the 5 min average climbs 3% or more above the first reading after the close, water is still coming in, so it **cycles the valve fully open and then fully closed** (full 8.5 s travel both ways, ignoring Fill Valve Opening) to free it. `fill_reason` reports `valve_reclose` during a cycle.
 
 - The reading follows the sun: on a sunny day with passing clouds it rises ~35 mm when a cloud shades the sensor and falls again in full sun (up to ~3% peak to peak, flat at night). Averaging over 5 min and needing a 3% rise keeps those swings from triggering a cycle. Shading the sensor, its cable and the electronics from direct sun shrinks the swings at the source.
 - A full-flow leak (~0.6%/min) reaches 3% by the second 5 min window. An overflowing tank goes flat (~98.4% on 22 Oct) but stays well above the level at the close, so it still counts as leaking.
+- The rise (3%), averaging window (5 min) and watch time (30 min) are the defaults. Change them with the **Leak Check Rise / Window / Watch Time** numbers (or `tanks/fill/config/leak_*`); they are saved with the rest of the fill config, so they survive reboots and reflashes. A bigger rise or a longer window means fewer false cycles but a slower catch.
 - Up to 5 reclose cycles, each followed by a fresh check against the level at the original close.
 - If it is still leaking after that, the `valve_stuck_open` fault latches (auto-fill stays blocked until it is cleared) and a cycle is retried every 15 min while the level stays 3% above the close. Clearing the fault ends the watch.
 - A tank that overflowed stays high even after the valve frees itself, so it can still latch `valve_stuck_open` — check the valve and clear the fault.
@@ -233,7 +234,10 @@ pio device monitor -b 115200
   "fill_reason": "none",
   "valve": "closed",
   "opening_pc": 100,
-  "valve_pos_pc": 0
+  "valve_pos_pc": 0,
+  "leak_rise_pc": 3.0,
+  "leak_window_min": 5,
+  "leak_watch_min": 30
 }
 ```
 
@@ -251,6 +255,9 @@ pio device monitor -b 115200
 | `tanks/fill/config/low_threshold` | `5`–`95`          | Auto-fill trigger percentage |
 | `tanks/fill/config/max_duration`  | `10`–`480`        | Max fill duration (minutes)  |
 | `tanks/fill/config/opening`       | `10`–`100`        | Fill valve opening (%)       |
+| `tanks/fill/config/leak_rise`     | `1`–`10`          | Leak check rise (%)          |
+| `tanks/fill/config/leak_window`   | `1`–`15`          | Leak check window (minutes)  |
+| `tanks/fill/config/leak_watch`    | `10`–`120`        | Leak check watch (minutes)   |
 | `tanks/fill/command`              | `start` / `stop`  | Manual fill start/stop       |
 | `tanks/fill/command/override`     | `clear_fault`     | Clear fault state            |
 
@@ -277,6 +284,9 @@ All discovered entities now share the `tanks/status` availability topic, and con
 | Fill Low Threshold    | Number        | Auto-fill trigger % (5–95)               |
 | Fill Max Duration     | Number        | Timeout in minutes (10–480)              |
 | Fill Valve Opening    | Number        | Trickle fill: valve opening % (10–100)   |
+| Leak Check Rise       | Number        | Rise above the close level that means a leak, % (1–10, default 3) |
+| Leak Check Window     | Number        | Averaging window, min (1–15, default 5)  |
+| Leak Check Watch Time | Number        | How long to watch after a close, min (10–120, default 30) |
 | Valve Position        | Sensor        | Estimated valve position (%)             |
 | Fill State            | Sensor        | Current state machine state (enum)       |
 | Valve State           | Sensor        | Valve position/activity (enum)           |

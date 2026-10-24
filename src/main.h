@@ -22,6 +22,7 @@
 /// 26-10-03 - v0.10.0 - Trickle fill: configurable valve opening (10-100% of travel time) via time-based position estimate re-referenced at end stops, applied live mid-fill; hard max fill 60 -> 480 min, default max duration 240 min
 /// 26-10-24 - v0.11.0 - Post-close leak check: after every close, a 1.5% rise in 5 min, or climbing past 97% (overflowing), within 30 min means the valve did not seal; cycle it fully open and closed up to 5 times, then latch valve_stuck_open fault and retry every 15 min while still leaking; new fill_reason valve_reclose
 /// 26-10-24 - v0.12.0 - Leak check ignores sun/cloud swings in the Tank 3 reading (~3% peak to peak on sunny middays): reads Tank 3 every 10 s while watching and compares 5 min averages with the first reading after the close; leaking = 3% above it (replaces the 1.5%/5 min and 97% rules)
+/// 26-10-24 - v0.13.0 - Leak check rise, averaging window and watch time adjustable over MQTT (tanks/fill/config/leak_rise|leak_window|leak_watch) and from HA number entities; saved in the fill config (padding bytes, 0 = defaults 3% / 5 min / 30 min)
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -45,7 +46,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 12
+#define VER_MINOR 13
 #define VER_PATCH 0
 #define VER_DATE  "2026-10-24"
 
@@ -165,6 +166,9 @@ const char* mqttTopicFillCfgLow     = "tanks/fill/config/low_threshold";
 const char* mqttTopicFillCfgMaxDur  = "tanks/fill/config/max_duration";
 const char* mqttTopicFillCfgMode    = "tanks/fill/config/mode";
 const char* mqttTopicFillCfgOpening = "tanks/fill/config/opening";
+const char* mqttTopicFillCfgLeakRise   = "tanks/fill/config/leak_rise";
+const char* mqttTopicFillCfgLeakWindow = "tanks/fill/config/leak_window";
+const char* mqttTopicFillCfgLeakWatch  = "tanks/fill/config/leak_watch";
 
 // SENSOR AND CALIBRATION /////////////////////////////////////////////////////
 
