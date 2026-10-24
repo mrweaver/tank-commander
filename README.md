@@ -140,7 +140,7 @@ head_mm = mA × m + b
 
 **Default calibration:** `m = 128.5657757`, `b = -516.7934059`
 
-Calibration can be updated at runtime via MQTT (see below). Changes are **not persisted** across reboots.
+Calibration can be updated at runtime via MQTT (see below). Each tank's latest calibration is saved in EEPROM (NVS on the ESP32) and restored at boot, so it no longer depends on a retained MQTT message. A retained calibration still applies on top when MQTT connects. Values with `m <= 0` or that are not numbers are rejected.
 
 ## Setup
 

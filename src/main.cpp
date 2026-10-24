@@ -3,6 +3,9 @@
 
 static_assert(FILL_TARGET_MAX_PC == 92.0f, "update fill_target discovery max to match FILL_TARGET_MAX_PC");
 static_assert(FILL_HARD_MAX_MIN == 480, "update fill_max_duration discovery max to match FILL_HARD_MAX_MIN");
+static_assert(FILL_CONFIG_ADDR + sizeof(FillConfig) <= CAL_CONFIG_ADDR &&
+                  CAL_CONFIG_ADDR + sizeof(CalConfig) <= FILL_EEPROM_SIZE,
+              "FillConfig and CalConfig must not overlap and must fit in the EEPROM area");
 static_assert(LEAK_WINDOW_MIN_MIN == 1 && LEAK_WINDOW_MAX_MIN == 15 && LEAK_WATCH_MIN_MIN == 10 && LEAK_WATCH_MAX_MIN == 120,
               "update leak_window / leak_watch discovery min/max to match");
 
@@ -40,7 +43,20 @@ void setup(void)
     // Init fill controller for Tank 3 (index 2)
     // P_VALVE_PWR / P_VALVE_DIR are board-specific relay pins from build flags.
     fillController = new FillController(P_VALVE_PWR, P_VALVE_DIR, &tanks[2]);
-    fillController->begin();
+    fillController->begin();  // also opens the EEPROM area
+
+    // Restore saved tank calibrations (HA's retained cal topics still apply on top)
+    CalConfig cal;
+    if (calLoad(cal))
+    {
+        for (uint8_t i = 0; i < CAL_TANKS && i < tanks.size(); i++)
+        {
+            if (!(cal.setMask & (1 << i)))
+                continue;
+            tanks[i].setCali_mA_to_mm(cal.m[i], cal.b[i]);
+            Serial.printf("Tank %u calibration restored: m=%0.4f, b=%0.4f\n", i + 1, cal.m[i], cal.b[i]);
+        }
+    }
 
     if (wifiConnect())
     {
@@ -489,8 +505,17 @@ void mqttDecode()
         {
             uint8_t idx = (topic == mqttTopicSubCal1) ? 0 : (topic == mqttTopicSubCal2) ? 1
                                                                                         : 2;
-            tanks[idx].setCali_mA_to_mm(m, b);
-            Serial.printf("Received - Tank %u calibration: m=%0.4f, b=%0.4f\n", idx + 1, m, b);
+            if (calValid(m, b))
+            {
+                tanks[idx].setCali_mA_to_mm(m, b);
+                if (!calSave(idx, m, b))
+                    Serial.println("Calibration save failed.");
+                Serial.printf("Received - Tank %u calibration: m=%0.4f, b=%0.4f\n", idx + 1, m, b);
+            }
+            else
+            {
+                Serial.printf("Tank %u calibration rejected: m=%0.4f, b=%0.4f\n", idx + 1, m, b);
+            }
         }
         else
         {
