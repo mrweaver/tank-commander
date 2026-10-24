@@ -3,6 +3,8 @@
 
 static_assert(FILL_TARGET_MAX_PC == 92.0f, "update fill_target discovery max to match FILL_TARGET_MAX_PC");
 static_assert(FILL_HARD_MAX_MIN == 480, "update fill_max_duration discovery max to match FILL_HARD_MAX_MIN");
+static_assert(LEAK_WINDOW_MIN_MIN == 1 && LEAK_WINDOW_MAX_MIN == 15 && LEAK_WATCH_MIN_MIN == 10 && LEAK_WATCH_MAX_MIN == 120,
+              "update leak_window / leak_watch discovery min/max to match");
 
 void setup(void)
 {
@@ -341,6 +343,9 @@ bool mqttConnect()
         mqttClient.subscribe(mqttTopicFillCfgMaxDur);
         mqttClient.subscribe(mqttTopicFillCfgMode);
         mqttClient.subscribe(mqttTopicFillCfgOpening);
+        mqttClient.subscribe(mqttTopicFillCfgLeakRise);
+        mqttClient.subscribe(mqttTopicFillCfgLeakWindow);
+        mqttClient.subscribe(mqttTopicFillCfgLeakWatch);
         mqttClient.subscribe(mqttTopicFillCommand);
         mqttClient.subscribe(mqttTopicFillOverride);
         mqttClient.subscribe(mqttTopicDiagRescanCmd);
@@ -529,6 +534,21 @@ void mqttDecode()
         fillController->setValveOpening((uint8_t)constrain(payload.toInt(), 0, 100));
         publishFillAck = true;
     }
+    else if (topic == mqttTopicFillCfgLeakRise)
+    {
+        fillController->setLeakRise(payload.toFloat());
+        publishFillAck = true;
+    }
+    else if (topic == mqttTopicFillCfgLeakWindow)
+    {
+        fillController->setLeakWindow((uint8_t)constrain(payload.toInt(), 0, 255));
+        publishFillAck = true;
+    }
+    else if (topic == mqttTopicFillCfgLeakWatch)
+    {
+        fillController->setLeakWatch((uint8_t)constrain(payload.toInt(), 0, 255));
+        publishFillAck = true;
+    }
 
     // Fill controller commands
     if (topic == mqttTopicFillCommand)
@@ -608,7 +628,7 @@ void setTxInterval(uint64_t s)
 
 bool mqttPublishFillState()
 {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<768> doc;
     doc["state"]            = fillController->stateStr();
     doc["filling"]          = fillController->isFilling();
     doc["enabled"]          = fillController->config().fillEnabled;
@@ -628,8 +648,11 @@ bool mqttPublishFillState()
     doc["valve"]            = fillController->valveStateStr();
     doc["opening_pc"]       = fillController->valveOpeningPc();
     doc["valve_pos_pc"]     = fillController->valvePosPc();
+    doc["leak_rise_pc"]     = fillController->leakRisePc();
+    doc["leak_window_min"]  = fillController->leakWindowMin();
+    doc["leak_watch_min"]   = fillController->leakWatchMin();
 
-    char buf[512];
+    char buf[768];
     size_t n = serializeJson(doc, buf);
     return mqttClient.publish(mqttTopicFillState, (const uint8_t*)buf, n, true);  // retained
 }
@@ -776,6 +799,32 @@ void mqttPublishHADiscovery()
                            "\"min\":10,\"max\":100,\"step\":5,"  // min = FILL_OPENING_MIN_PC
                            "\"unit_of_measurement\":\"%\","
                            "\"icon\":\"mdi:valve-open\"}");
+
+    // Post-close leak check settings (stuck-open valve detection)
+    publishDiscoveryEntity("number", "leak_rise", "Leak Check Rise",
+                           "{\"command_topic\":\"tanks/fill/config/leak_rise\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.leak_rise_pc }}\","
+                           "\"min\":1,\"max\":10,\"step\":0.1,"  // LEAK_RISE_MIN_PC..LEAK_RISE_MAX_PC
+                           "\"unit_of_measurement\":\"%\","
+                           "\"entity_category\":\"config\","
+                           "\"icon\":\"mdi:arrow-up-bold-box-outline\"}");
+    publishDiscoveryEntity("number", "leak_window", "Leak Check Window",
+                           "{\"command_topic\":\"tanks/fill/config/leak_window\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.leak_window_min }}\","
+                           "\"min\":1,\"max\":15,\"step\":1,"  // LEAK_WINDOW_MIN_MIN..LEAK_WINDOW_MAX_MIN
+                           "\"unit_of_measurement\":\"min\","
+                           "\"entity_category\":\"config\","
+                           "\"icon\":\"mdi:timer-sand\"}");
+    publishDiscoveryEntity("number", "leak_watch", "Leak Check Watch Time",
+                           "{\"command_topic\":\"tanks/fill/config/leak_watch\","
+                           "\"state_topic\":\"tanks/fill/state\","
+                           "\"value_template\":\"{{ value_json.leak_watch_min }}\","
+                           "\"min\":10,\"max\":120,\"step\":5,"  // LEAK_WATCH_MIN_MIN..LEAK_WATCH_MAX_MIN
+                           "\"unit_of_measurement\":\"min\","
+                           "\"entity_category\":\"config\","
+                           "\"icon\":\"mdi:timer-outline\"}");
 
     // Estimated valve position (time-based)
     publishDiscoveryEntity("sensor", "valve_position", "Valve Position",

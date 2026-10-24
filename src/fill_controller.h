@@ -28,24 +28,33 @@
 
 // Post-close leak check: the valve has no position feedback, so a valve that
 // jams open still reports "closed" (22 Oct 2026: Tank 3 overflowed for 5 h).
-// After every full close, watch Tank 3 for LEAK_WATCH_MS and cycle the valve
+// After every full close, watch Tank 3 (default LEAK_WATCH_MIN) and cycle the valve
 // fully open and closed again if water is still coming in.
 //
 // The level reading follows the sun, not the air temperature: on 24 Oct it rose
 // ~35 mm each time a cloud shaded the sensor and fell again in full sun, with
 // readings ranging 1807-1871 mm (3.3 %) over 45 min while the tank was idle.
 // Nights are flat. So single readings can't be compared: Tank 3 is read every
-// FILL_READ_INTERVAL_MS while watching, averaged over each LEAK_CHECK_WINDOW_MS
-// window, and the valve counts as leaking when a window mean is LEAK_RISE_PC
-// above the first reading after the close. Run against the 24 Oct readings
+// FILL_READ_INTERVAL_MS while watching and averaged over each window (default
+// LEAK_WINDOW_MIN), and the valve counts as leaking when a window mean is the
+// leak rise (default LEAK_RISE_PC) above the first reading after the close.
+// Run against the 24 Oct readings
 // (and the same swings scaled up by 1.5) that never fired; a full-flow leak
 // (~0.6 %/min) gets there by the second window. It also catches an overflow: the level then goes
 // flat (~98.4 % on 22 Oct), still well above the level at the close.
 // After LEAK_RECLOSE_ATTEMPTS failed cycles the valve_stuck_open fault latches,
 // and a cycle is retried every LEAK_RETRY_MS while the level stays that high.
-#define LEAK_WATCH_MS               (30UL * 60000UL)
-#define LEAK_CHECK_WINDOW_MS        (5UL * 60000UL)
-#define LEAK_RISE_PC                3.0f
+// The rise, window and watch length can be changed over MQTT and are saved in
+// FillConfig; 0 there (configs saved before v0.13) means the default below.
+#define LEAK_WATCH_MIN              30     // default watch after a close [min]
+#define LEAK_WATCH_MIN_MIN          10
+#define LEAK_WATCH_MAX_MIN          120
+#define LEAK_WINDOW_MIN             5      // default averaging window [min]
+#define LEAK_WINDOW_MIN_MIN         1
+#define LEAK_WINDOW_MAX_MIN         15
+#define LEAK_RISE_PC                3.0f   // default rise above the level at close [%]
+#define LEAK_RISE_MIN_PC            1.0f
+#define LEAK_RISE_MAX_PC            10.0f
 #define LEAK_RECLOSE_ATTEMPTS       5
 #define LEAK_RETRY_MS               (15UL * 60000UL)
 
@@ -116,7 +125,10 @@ struct FillConfig
     uint8_t valveMode;         // 0=Closed, 1=Auto, 2=Open (see ValveMode enum)
     uint8_t latchedFault;      // FillFault — survives reboot until cleared (was _reserved[0], always 0)
     uint8_t valveOpening_pc;   // fill opening as % of travel time, 10-100 (was _reserved[1]; 0 => 100)
-    uint8_t _reserved[5];      // padding for future fields
+    uint8_t leakRise_dpc;      // leak check rise in 0.1 % steps (was padding; 0 => LEAK_RISE_PC)
+    uint8_t leakWindow_min;    // leak check averaging window (was padding; 0 => LEAK_WINDOW_MIN)
+    uint8_t leakWatch_min;     // leak check watch after a close (was padding; 0 => LEAK_WATCH_MIN)
+    uint8_t _reserved[2];      // padding for future fields
 };
 
 class FillController
@@ -134,6 +146,9 @@ public:
     void setMaxDuration(uint16_t minutes);
     void setValveMode(uint8_t mode);
     void setValveOpening(uint8_t pc);  // trickle fill — applied live if a fill is in progress
+    void setLeakRise(float pc);
+    void setLeakWindow(uint8_t minutes);
+    void setLeakWatch(uint8_t minutes);
     void commandStart();
     void commandStop();
     void commandClearFault();
@@ -153,6 +168,9 @@ public:
     float fillRatePcPerMin() const { return m_fillRate_pcpm; }  // last measured rise rate (0 when not filling)
     uint8_t valveOpeningPc() const;                             // configured fill opening
     uint8_t valvePosPc() const;                                 // estimated current valve position
+    float leakRisePc() const;                                   // leak check settings, defaults applied
+    uint8_t leakWindowMin() const;
+    uint8_t leakWatchMin() const;
 
     // Config persistence
     void saveConfig();

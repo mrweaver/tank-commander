@@ -394,6 +394,33 @@ void FillController::setValveOpening(uint8_t pc)
         startValveOpen();
 }
 
+void FillController::setLeakRise(float pc)
+{
+    if (pc < LEAK_RISE_MIN_PC) pc = LEAK_RISE_MIN_PC;
+    if (pc > LEAK_RISE_MAX_PC) pc = LEAK_RISE_MAX_PC;
+    m_config.leakRise_dpc = (uint8_t)(pc * 10.0f + 0.5f);
+    saveConfig();
+    Serial.printf("Fill: leak check rise = %.1f %%\n", leakRisePc());
+}
+
+void FillController::setLeakWindow(uint8_t minutes)
+{
+    if (minutes < LEAK_WINDOW_MIN_MIN) minutes = LEAK_WINDOW_MIN_MIN;
+    if (minutes > LEAK_WINDOW_MAX_MIN) minutes = LEAK_WINDOW_MAX_MIN;
+    m_config.leakWindow_min = minutes;
+    saveConfig();
+    Serial.printf("Fill: leak check window = %u min\n", minutes);
+}
+
+void FillController::setLeakWatch(uint8_t minutes)
+{
+    if (minutes < LEAK_WATCH_MIN_MIN) minutes = LEAK_WATCH_MIN_MIN;
+    if (minutes > LEAK_WATCH_MAX_MIN) minutes = LEAK_WATCH_MAX_MIN;
+    m_config.leakWatch_min = minutes;
+    saveConfig();
+    Serial.printf("Fill: leak check watch = %u min\n", minutes);
+}
+
 void FillController::setValveMode(uint8_t mode)
 {
     if (mode > 2) return;
@@ -601,6 +628,25 @@ uint8_t FillController::valveOpeningPc() const
     return (pc == 0 || pc > 100) ? 100 : pc;  // 0 = never set (pre-v0.10 EEPROM)
 }
 
+// Leak check settings: 0 = never set (pre-v0.13 EEPROM), out of range = default
+float FillController::leakRisePc() const
+{
+    float pc = m_config.leakRise_dpc / 10.0f;
+    return (pc < LEAK_RISE_MIN_PC || pc > LEAK_RISE_MAX_PC) ? LEAK_RISE_PC : pc;
+}
+
+uint8_t FillController::leakWindowMin() const
+{
+    uint8_t m = m_config.leakWindow_min;
+    return (m < LEAK_WINDOW_MIN_MIN || m > LEAK_WINDOW_MAX_MIN) ? LEAK_WINDOW_MIN : m;
+}
+
+uint8_t FillController::leakWatchMin() const
+{
+    uint8_t m = m_config.leakWatch_min;
+    return (m < LEAK_WATCH_MIN_MIN || m > LEAK_WATCH_MAX_MIN) ? LEAK_WATCH_MIN : m;
+}
+
 uint8_t FillController::valvePosPc() const
 {
     return (uint8_t)((currentValvePos() * 100UL + VALVE_FULL_TRAVEL_MS / 2) / VALVE_FULL_TRAVEL_MS);
@@ -800,7 +846,7 @@ void FillController::updateLeakWatch()
         m_leakSum_pc += m_tank3->pc();
         m_leakSamples++;
     }
-    if ((now - m_leakRef_ms) < LEAK_CHECK_WINDOW_MS)
+    if ((now - m_leakRef_ms) < leakWindowMin() * 60000UL)
         return;
     if (m_leakSamples == 0)
     {
@@ -816,9 +862,9 @@ void FillController::updateLeakWatch()
     // An overflowing tank stays high, so this keeps firing after a valve that
     // freed itself too. That errs towards more cycles: a cycle on a sealed
     // valve only lets in a few litres.
-    if (rise_pc < LEAK_RISE_PC)
+    if (rise_pc < leakRisePc())
     {
-        if ((now - m_leakWatchStart_ms) >= LEAK_WATCH_MS)
+        if ((now - m_leakWatchStart_ms) >= leakWatchMin() * 60000UL)
         {
             if (m_leakAttempts > 0)
                 Serial.printf("Fill: Leak check passed after %u reclose attempt(s).\n", m_leakAttempts);
@@ -827,8 +873,8 @@ void FillController::updateLeakWatch()
         return;
     }
 
-    Serial.printf("Fill: Level averaged %.1f%% over %lu min, %.1f%% above the %.1f%% at close, with the valve closed — valve may be stuck open.\n",
-                  mean_pc, LEAK_CHECK_WINDOW_MS / 60000UL, rise_pc, m_leakStart_pc);
+    Serial.printf("Fill: Level averaged %.1f%% over %u min, %.1f%% above the %.1f%% at close, with the valve closed — valve may be stuck open.\n",
+                  mean_pc, leakWindowMin(), rise_pc, m_leakStart_pc);
 
     if (m_leakAttempts < LEAK_RECLOSE_ATTEMPTS)
     {
@@ -985,5 +1031,8 @@ void FillController::setDefaults()
     m_config.valveMode       = (uint8_t)ValveMode::CLOSED;
     m_config.latchedFault    = (uint8_t)FillFault::NONE;
     m_config.valveOpening_pc = 100;
+    m_config.leakRise_dpc    = 0;  // 0 = defaults (LEAK_*)
+    m_config.leakWindow_min  = 0;
+    m_config.leakWatch_min   = 0;
     memset(m_config._reserved, 0, sizeof(m_config._reserved));
 }
