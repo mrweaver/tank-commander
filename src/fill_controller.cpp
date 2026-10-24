@@ -24,8 +24,9 @@ FillController::FillController(uint8_t powerPin, uint8_t dirPin, Tank* tank3)
       m_leakAttempts(0),
       m_leakWatchStart_ms(0),
       m_leakRef_ms(0),
-      m_leakRef_pc(0),
-      m_leakRefValid(false),
+      m_leakLastRead_ms(0),
+      m_leakSum_pc(0),
+      m_leakSamples(0),
       m_leakStart_pc(0),
       m_leakStartValid(false),
       m_leakLastAttempt_ms(0),
@@ -768,8 +769,15 @@ void FillController::armLeakWatch()
     m_reclosing         = false;
     m_leakWatch         = true;
     m_leakWatchStart_ms = millis();
-    m_leakRef_ms        = millis();
-    m_leakRefValid      = false;  // reference taken on the next valid read
+    resetLeakWindow();
+}
+
+void FillController::resetLeakWindow()
+{
+    m_leakRef_ms      = millis();
+    m_leakLastRead_ms = m_tank3->lastReadOk_ms();  // count only readings taken from now on
+    m_leakSum_pc      = 0;
+    m_leakSamples     = 0;
 }
 
 void FillController::updateLeakWatch()
@@ -777,38 +785,38 @@ void FillController::updateLeakWatch()
     if (!m_tank3->connected() || !m_tank3->sensorOk())
     {
         // No trustworthy level — restart the window once the sensor is back
-        m_leakRefValid = false;
+        resetLeakWindow();
         return;
     }
     uint32_t now = millis();
-    if (!m_leakStartValid)
+    if (m_tank3->lastReadOk_ms() != m_leakLastRead_ms)
     {
-        m_leakStart_pc   = m_tank3->pc();
-        m_leakStartValid = true;
-    }
-    if (!m_leakRefValid)
-    {
-        m_leakRef_pc   = m_tank3->pc();
-        m_leakRef_ms   = now;
-        m_leakRefValid = true;
-        return;
+        m_leakLastRead_ms = m_tank3->lastReadOk_ms();
+        if (!m_leakStartValid)
+        {
+            m_leakStart_pc   = m_tank3->pc();
+            m_leakStartValid = true;
+        }
+        m_leakSum_pc += m_tank3->pc();
+        m_leakSamples++;
     }
     if ((now - m_leakRef_ms) < LEAK_CHECK_WINDOW_MS)
         return;
+    if (m_leakSamples == 0)
+    {
+        resetLeakWindow();
+        return;
+    }
 
-    float rise_pc = m_tank3->pc() - m_leakRef_pc;
-    m_leakRef_pc  = m_tank3->pc();
-    m_leakRef_ms  = now;
-
-    // Once Tank 3 overflows its level stops rising, so climbing to the overflow
-    // since the close also counts as still leaking. A flat level there can't
-    // show whether a reclose worked, so this errs towards more cycles: a cycle
-    // on a sealed valve only lets in a few litres.
-    bool rising   = rise_pc >= LEAK_RISE_MIN_PC;
-    bool overflow = m_tank3->pc() >= LEAK_OVERFLOW_PC && m_leakStart_pc < LEAK_OVERFLOW_PC;
+    float mean_pc = m_leakSum_pc / m_leakSamples;
+    float rise_pc = mean_pc - m_leakStart_pc;
     bool latched  = m_fault == FillFault::VALVE_STUCK;
+    resetLeakWindow();
 
-    if (!rising && !overflow)
+    // An overflowing tank stays high, so this keeps firing after a valve that
+    // freed itself too. That errs towards more cycles: a cycle on a sealed
+    // valve only lets in a few litres.
+    if (rise_pc < LEAK_RISE_PC)
     {
         if ((now - m_leakWatchStart_ms) >= LEAK_WATCH_MS)
         {
@@ -819,8 +827,8 @@ void FillController::updateLeakWatch()
         return;
     }
 
-    Serial.printf("Fill: Level rose %.2f%% in %lu min (now %.1f%%, %.1f%% at close) with the valve closed — valve may be stuck open.\n",
-                  rise_pc, LEAK_CHECK_WINDOW_MS / 60000UL, m_tank3->pc(), m_leakStart_pc);
+    Serial.printf("Fill: Level averaged %.1f%% over %lu min, %.1f%% above the %.1f%% at close, with the valve closed — valve may be stuck open.\n",
+                  mean_pc, LEAK_CHECK_WINDOW_MS / 60000UL, rise_pc, m_leakStart_pc);
 
     if (m_leakAttempts < LEAK_RECLOSE_ATTEMPTS)
     {
@@ -830,7 +838,7 @@ void FillController::updateLeakWatch()
     else if (!latched || (now - m_leakLastAttempt_ms) >= LEAK_RETRY_MS)
     {
         // Quick attempts used up: latch the fault (blocks auto-fill until cleared)
-        // and keep retrying at a slower pace while it is still rising or overflowing.
+        // and keep retrying at a slower pace while the level stays high.
         if (!latched)
             Serial.printf("Fill: Still leaking after %u reclose attempts — valve_stuck_open latched.\n",
                           m_leakAttempts);

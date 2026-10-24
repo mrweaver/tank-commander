@@ -83,7 +83,7 @@ DISABLED ──► IDLE ──► VALVE_OPENING ──► FILLING ──► VALV
 | Cooldown          | 30 s    | Prevents rapid valve cycling    |
 | Overflow cap      | 95%     | Always closes the valve, even in `open` mode |
 | Progress check    | ≥ 0.5% rise per 5 min | Valve open but level not rising → `no_progress` fault |
-| Leak check        | < 1.5% rise per 5 min, and not past 97%, for 30 min after every close | Level still rising (or overflowing) with the valve closed → reclose cycles, then `valve_stuck_open` fault |
+| Leak check        | 5 min average stays < 3% above the level at close, for 30 min after every close | Level still rising (or overflowing) with the valve closed → reclose cycles, then `valve_stuck_open` fault |
 
 Configuration is persisted to EEPROM (magic `0xFC03`, version 3).
 
@@ -100,11 +100,13 @@ These faults are **latched in EEPROM** and survive reboots — clear them with t
 
 #### Stuck-open valve (post-close leak check)
 
-The valve has no position feedback, so a valve that jams open still reports `closed`. After every full close (end of a fill, a fault, a stop, or the boot close) the controller watches Tank 3 for 30 min. If the level rises by 1.5% or more in a 5 min window, water is still coming in, so it **cycles the valve fully open and then fully closed** (full 8.5 s travel both ways, ignoring Fill Valve Opening) to free it. `fill_reason` reports `valve_reclose` during a cycle.
+The valve has no position feedback, so a valve that jams open still reports `closed`. After every full close (end of a fill, a fault, a stop, or the boot close) the controller watches Tank 3 for 30 min, reading it every 10 s. If the 5 min average climbs 3% or more above the first reading after the close, water is still coming in, so it **cycles the valve fully open and then fully closed** (full 8.5 s travel both ways, ignoring Fill Valve Opening) to free it. `fill_reason` reports `valve_reclose` during a cycle.
 
-- Once Tank 3 overflows its level goes flat, so a level that has climbed past 97% since the close also counts as still leaking (a normal fill stops at 92% and the cap is 95%).
-- Up to 5 reclose cycles, each followed by a fresh 5 min check.
-- If it is still leaking after that, the `valve_stuck_open` fault latches (auto-fill stays blocked until it is cleared) and a cycle is retried every 15 min while the level is still rising or above 97%. Clearing the fault ends the watch.
+- The reading follows the sun: on a sunny day with passing clouds it rises ~35 mm when a cloud shades the sensor and falls again in full sun (up to ~3% peak to peak, flat at night). Averaging over 5 min and needing a 3% rise keeps those swings from triggering a cycle. Shading the sensor, its cable and the electronics from direct sun shrinks the swings at the source.
+- A full-flow leak (~0.6%/min) reaches 3% by the second 5 min window. An overflowing tank goes flat (~98.4% on 22 Oct) but stays well above the level at the close, so it still counts as leaking.
+- Up to 5 reclose cycles, each followed by a fresh check against the level at the original close.
+- If it is still leaking after that, the `valve_stuck_open` fault latches (auto-fill stays blocked until it is cleared) and a cycle is retried every 15 min while the level stays 3% above the close. Clearing the fault ends the watch.
+- A tank that overflowed stays high even after the valve frees itself, so it can still latch `valve_stuck_open` — check the valve and clear the fault.
 - Heavy rain overflowing from Tank 2 can also raise Tank 3 just after a close. That costs a few short open/close cycles, and in a long downpour it can latch `valve_stuck_open` — check the valve and clear the fault.
 
 #### Trickle fill (partial valve opening)

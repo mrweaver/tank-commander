@@ -94,10 +94,12 @@ void loop(void)
         mqttPublishStates();  // broadcast new states to MQTT broker
     }
 
-    // Fast sensor reads during active fill (every 10s instead of 60s).
+    // Fast sensor reads during active fill and the post-close leak check
+    // (every 10s instead of 60s; the leak check averages them).
     // Always attempt read() — read() handles the I2C probe and recovery
     // internally; gating on connected() would prevent recovery.
-    if (fillController->isFilling() && (millis() - lastFillRead_ms) > FILL_READ_INTERVAL_MS)
+    if ((fillController->isFilling() || fillController->leakWatching()) &&
+        (millis() - lastFillRead_ms) > FILL_READ_INTERVAL_MS)
     {
         tanks[2].read();
         lastFillRead_ms = millis();

@@ -28,19 +28,24 @@
 
 // Post-close leak check: the valve has no position feedback, so a valve that
 // jams open still reports "closed" (22 Oct 2026: Tank 3 overflowed for 5 h).
-// After every full close, watch Tank 3 for LEAK_WATCH_MS. A rise of at least
-// LEAK_RISE_MIN_PC in a LEAK_CHECK_WINDOW_MS window means water is still coming
-// in, so cycle the valve fully open and closed again to free it. Full flow is
-// ~0.6 %/min (~3 % per window); 1.5 % stays clear of sensor noise (~1 %).
-// Once the tank overflows the level goes flat (~98.5 % on 22 Oct), so a level
-// that has climbed past LEAK_OVERFLOW_PC since the close also counts as still
-// leaking. It sits above the 95 % cap so a valve freed on the way up still passes.
+// After every full close, watch Tank 3 for LEAK_WATCH_MS and cycle the valve
+// fully open and closed again if water is still coming in.
+//
+// The level reading follows the sun, not the air temperature: on 24 Oct it rose
+// ~35 mm each time a cloud shaded the sensor and fell again in full sun, with
+// readings ranging 1807-1871 mm (3.3 %) over 45 min while the tank was idle.
+// Nights are flat. So single readings can't be compared: Tank 3 is read every
+// FILL_READ_INTERVAL_MS while watching, averaged over each LEAK_CHECK_WINDOW_MS
+// window, and the valve counts as leaking when a window mean is LEAK_RISE_PC
+// above the first reading after the close. Run against the 24 Oct readings
+// (and the same swings scaled up by 1.5) that never fired; a full-flow leak
+// (~0.6 %/min) gets there by the second window. It also catches an overflow: the level then goes
+// flat (~98.4 % on 22 Oct), still well above the level at the close.
 // After LEAK_RECLOSE_ATTEMPTS failed cycles the valve_stuck_open fault latches,
-// and a cycle is retried every LEAK_RETRY_MS while it is still rising or overflowing.
+// and a cycle is retried every LEAK_RETRY_MS while the level stays that high.
 #define LEAK_WATCH_MS               (30UL * 60000UL)
 #define LEAK_CHECK_WINDOW_MS        (5UL * 60000UL)
-#define LEAK_RISE_MIN_PC            1.5f
-#define LEAK_OVERFLOW_PC            97.0f
+#define LEAK_RISE_PC                3.0f
 #define LEAK_RECLOSE_ATTEMPTS       5
 #define LEAK_RETRY_MS               (15UL * 60000UL)
 
@@ -142,6 +147,7 @@ public:
     bool isFilling() const { return m_state == FillState::FILLING || m_state == FillState::VALVE_OPENING; }
     bool isValveBusy() const { return m_state == FillState::VALVE_OPENING || m_state == FillState::VALVE_CLOSING; }
     bool keepAwake() const { return m_keepAwake || m_leakWatch; }
+    bool leakWatching() const { return m_leakWatch; }  // post-close leak check running (read Tank 3 fast)
     const FillConfig& config() const { return m_config; }
     uint32_t fillElapsedMin() const;
     float fillRatePcPerMin() const { return m_fillRate_pcpm; }  // last measured rise rate (0 when not filling)
@@ -183,9 +189,10 @@ private:
     uint8_t m_leakAttempts;             // reclose cycles since the last normal close (incl. slow retries)
     uint32_t m_leakWatchStart_ms;       // millis() of the close that armed the watch
     uint32_t m_leakRef_ms;              // start of the current check window
-    float m_leakRef_pc;                 // level at the start of the current check window
-    bool m_leakRefValid;                // m_leakRef_pc holds a valid reading
-    float m_leakStart_pc;               // level just after the close that armed the watch
+    uint32_t m_leakLastRead_ms;         // Tank 3 read already counted (its lastReadOk_ms)
+    float m_leakSum_pc;                 // sum of readings in the current window
+    uint16_t m_leakSamples;             // readings in the current window
+    float m_leakStart_pc;               // first reading after the close that armed the watch
     bool m_leakStartValid;              // m_leakStart_pc holds a valid reading
     uint32_t m_leakLastAttempt_ms;      // millis() of the last reclose cycle
 
@@ -213,6 +220,7 @@ private:
     void faultClose(FillFault fault);  // close valve, then latch FAULT_TIMEOUT with this classification
     void startReclose(FillState afterClose);  // full open then full close, to free a valve that did not seal
     void armLeakWatch();
+    void resetLeakWindow();
     void updateLeakWatch();
 
     // State machine
