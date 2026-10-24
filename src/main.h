@@ -23,6 +23,7 @@
 /// 26-10-24 - v0.11.0 - Post-close leak check: after every close, a 1.5% rise in 5 min, or climbing past 97% (overflowing), within 30 min means the valve did not seal; cycle it fully open and closed up to 5 times, then latch valve_stuck_open fault and retry every 15 min while still leaking; new fill_reason valve_reclose
 /// 26-10-24 - v0.12.0 - Leak check ignores sun/cloud swings in the Tank 3 reading (~3% peak to peak on sunny middays): reads Tank 3 every 10 s while watching and compares 5 min averages with the first reading after the close; leaking = 3% above it (replaces the 1.5%/5 min and 97% rules)
 /// 26-10-24 - v0.13.0 - Leak check rise, averaging window and watch time adjustable over MQTT (tanks/fill/config/leak_rise|leak_window|leak_watch) and from HA number entities; saved in the fill config (padding bytes, 0 = defaults 3% / 5 min / 30 min)
+/// 26-10-24 - v0.14.0 - Tank calibrations received on tanks/commands/calN are saved in EEPROM (NVS) and restored at boot, so they no longer depend on retained MQTT messages; invalid m,b (m <= 0, NaN) rejected
 ///
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -46,7 +47,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define VER_MAJOR 0
-#define VER_MINOR 13
+#define VER_MINOR 14
 #define VER_PATCH 0
 #define VER_DATE  "2026-10-24"
 
@@ -69,6 +70,7 @@
 
 // Fill Controller
 #include "fill_controller.h"
+#include "cal_store.h"
 
 // Credentials (gitignored)
 #include "secrets.h"
